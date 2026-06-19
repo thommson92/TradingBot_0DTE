@@ -168,6 +168,35 @@ def test_put_spread_pnl():
     print("[ok] Put-Spread: Long-Leg-Wahl, Netto-Kredit/-Exit, 2-Leg-Kommission")
 
 
+def test_put_spread_nan_bar_no_crash():
+    """Regression: ein Spread-Bar ohne Quote (NaN bid/ask) darf nicht crashen.
+
+    Frueher baute _simulate_spread_entry die Bars als pd.Series({Timestamp, bid,
+    ask}); pandas zwang die Series bei NaN bid/ask auf datetime64 und machte aus
+    den NaN-Floats NaT -> die Preis-Arithmetik ergab NaT und der Schwellenwert-
+    Vergleich (NaT >= float) warf einen TypeError. Jetzt werden Dicts genutzt.
+    """
+    rows = [
+        _bar("09:35:00", 4650.0, 2.0, 2.2, -0.16),
+        _bar("09:35:00", 4640.0, 0.5, 0.7, -0.08),
+        # Mittlerer Bar ohne Quote (illiquide Long-Leg): NaN bid/ask
+        _bar("09:36:00", 4650.0, float("nan"), float("nan"), -0.05),
+        _bar("09:36:00", 4640.0, float("nan"), float("nan"), -0.02),
+        # Spaeterer gueltiger Bar -> Profit-Target greift hier
+        _bar("09:37:00", 4650.0, 0.3, 0.5, -0.04),
+        _bar("09:37:00", 4640.0, 0.05, 0.15, -0.01),
+    ]
+    df = pd.DataFrame(rows)
+    params = _base_params(spread_type="put_spread", spread_width=10.0)
+    trades = run_day(df, DATE, params)  # darf nicht werfen
+    assert len(trades) == 1
+    tr = trades[0]
+    assert tr.exit_reason == "profit_target"
+    assert tr.exit_ts == pd.Timestamp("2024-01-05 09:37:00"), "NaN-Bar uebersprungen, Exit am gueltigen Bar"
+    assert math.isfinite(tr.pnl)
+    print("[ok] Put-Spread: NaN-Bar (kein Quote) wird ohne Crash uebersprungen")
+
+
 def test_compute_metrics():
     base_ts = pd.Timestamp("2024-01-02 10:00:00")
     trades = [
@@ -202,6 +231,7 @@ def main():
     test_multi_entry_cap()
     test_pick_long_leg()
     test_put_spread_pnl()
+    test_put_spread_nan_bar_no_crash()
     test_compute_metrics()
     print("\nAlle Backtest-Offline-Tests bestanden.")
 

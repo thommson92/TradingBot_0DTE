@@ -112,25 +112,32 @@ def _simulate_spread_entry(
         on="timestamp", suffixes=("_short", "_long"),
     ).sort_values("timestamp")
 
+    # itertuples statt iterrows: merged hat nur Timestamp- + Float-Spalten (keine
+    # String-Spalte), daher zwingt iterrows/iloc die Zeile auf datetime64 und macht
+    # aus NaN bid/ask (Bar ohne Quote) NaT -> die Preis-Arithmetik ergaebe NaT und
+    # der Schwellenwert-Vergleich (NaT >= float) wuerfe einen TypeError. itertuples
+    # erhaelt die Dtypes pro Feld (NaN bleibt float-NaN -> Vergleich liefert False).
+    bars = list(merged.itertuples(index=False))
+
     exit_reason: Optional[str] = None
     exit_cost: Optional[float] = None
     exit_ts: Optional[dt.datetime] = None
-    for _, row in merged.iterrows():
-        if row["timestamp"] == entry_ts:
+    for r in bars:
+        if r.timestamp == entry_ts:
             continue
-        short_bar = pd.Series({"timestamp": row["timestamp"], "bid": row["bid_short"], "ask": row["ask_short"]})
-        long_bar = pd.Series({"timestamp": row["timestamp"], "bid": row["bid_long"], "ask": row["ask_long"]})
+        short_bar = {"timestamp": r.timestamp, "bid": r.bid_short, "ask": r.ask_short}
+        long_bar = {"timestamp": r.timestamp, "bid": r.bid_long, "ask": r.ask_long}
         result = check_exit_spread(entry_credit, short_bar, long_bar, params, cutoff_time)
         if result is not None:
             exit_reason, exit_cost = result
-            exit_ts = row["timestamp"]
+            exit_ts = r.timestamp
             break
 
     if exit_reason is None:
-        last_row = merged.iloc[-1]
-        exit_ts = last_row["timestamp"]
-        exit_cost = buy_fill(last_row["bid_short"], last_row["ask_short"], params.slippage_pct_of_spread) - \
-            sell_fill(last_row["bid_long"], last_row["ask_long"], params.slippage_pct_of_spread)
+        last_row = bars[-1]
+        exit_ts = last_row.timestamp
+        exit_cost = buy_fill(last_row.bid_short, last_row.ask_short, params.slippage_pct_of_spread) - \
+            sell_fill(last_row.bid_long, last_row.ask_long, params.slippage_pct_of_spread)
         exit_reason = "expiration"
 
     pnl = trade_pnl(entry_credit, exit_cost, params.commission_per_contract_leg, legs=LEGS_PUT_SPREAD)

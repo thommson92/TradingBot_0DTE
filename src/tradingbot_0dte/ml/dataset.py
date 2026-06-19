@@ -137,7 +137,12 @@ def build_day_rows(
             }
             row.update(mf)
             row.update(cf)
-            row.update(_label_from_trade(trade) if trade is not None else _empty_label())
+            # NaN-P&L (z. B. Expiration-Fallback auf einem Bar ohne Quote) als nicht
+            # handelbar werten -> kein fehletikettiertes Label im Training.
+            if trade is not None and np.isfinite(trade.pnl):
+                row.update(_label_from_trade(trade))
+            else:
+                row.update(_empty_label())
             rows.append(row)
     return rows
 
