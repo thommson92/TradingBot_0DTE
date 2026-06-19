@@ -10,6 +10,9 @@ Beispiele:
 
   # Mehrere Entry-Zeiten/Tag, Tages-Limit aufheben:
   python scripts/run_backtest.py --entry-times 09:35:00,11:00:00,14:00:00 --max-trades-per-day 0
+
+  # Put-Spread statt nacktem Put (Long-Leg 10 Indexpunkte unter der Short-Leg):
+  python scripts/run_backtest.py --spread-type put_spread --spread-width 10
 """
 from __future__ import annotations
 
@@ -38,6 +41,8 @@ def main() -> int:
     parser.add_argument("--profit-target", type=float, help="Profit-Target als Anteil der Eroeffnungspraemie")
     parser.add_argument("--stop-mult", type=float, help="Stop-Loss-Multiplikator der Eroeffnungspraemie")
     parser.add_argument("--time-exit-min", type=int, help="Zeit-Exit X Minuten vor Handelsschluss")
+    parser.add_argument("--spread-type", choices=["naked", "put_spread"], help="naked oder put_spread")
+    parser.add_argument("--spread-width", type=float, help="Abstand Long-Leg in Indexpunkten (nur put_spread)")
     parser.add_argument("--csv", help="Trade-Log als CSV speichern")
     parser.add_argument("--json", help="Metrics als JSON speichern")
     args = parser.parse_args()
@@ -58,11 +63,17 @@ def main() -> int:
         params.stop_loss_multiplier = args.stop_mult
     if args.time_exit_min is not None:
         params.time_exit_before_close_min = args.time_exit_min
+    if args.spread_type is not None:
+        params.spread_type = args.spread_type
+    if args.spread_width is not None:
+        params.spread_width = args.spread_width
+    if params.spread_type == "put_spread" and params.spread_width is None:
+        parser.error("--spread-width ist fuer --spread-type put_spread erforderlich")
 
     trades = run(cfg, params, start=args.start, end=args.end)
     metrics = compute_metrics(trades)
 
-    print("=== Backtest: nackter Short Put ===")
+    print("=== Backtest: %s ===" % ("Put-Spread" if params.spread_type == "put_spread" else "nackter Short Put"))
     print("Trades          : %d" % metrics["n_trades"])
     print("Win-Rate        : %.1f%%" % (metrics["win_rate"] * 100) if metrics["n_trades"] else "Win-Rate        : n/a")
     print("Gesamt-P&L      : %.2f USD" % metrics["total_pnl"])

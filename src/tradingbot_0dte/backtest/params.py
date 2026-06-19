@@ -20,6 +20,8 @@ class StrategyParams:
     time_exit_before_close_min: Optional[int] = 5
     slippage_pct_of_spread: float = 0.25
     commission_per_contract_leg: float = 1.10
+    spread_type: str = "naked"  # "naked" oder "put_spread"
+    spread_width: Optional[float] = None  # Indexpunkte Abstand der Long-Leg (nur put_spread)
 
 
 def params_from_config(cfg: Config) -> StrategyParams:
@@ -36,4 +38,6 @@ def params_from_config(cfg: Config) -> StrategyParams:
         time_exit_before_close_min=s.time_exit_before_close_min,
         slippage_pct_of_spread=s.slippage_pct_of_spread,
         commission_per_contract_leg=s.commission_per_contract_leg,
+        spread_type=s.spread_type,
+        spread_width=s.spread_width,
     )

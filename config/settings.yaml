@@ -45,3 +45,9 @@ strategy:
 
   slippage_pct_of_spread: 0.25      # 25% des Bid/Ask-Spreads, adversativ
   commission_per_contract_leg: 1.10 # USD pro Kontrakt und Leg (Open+Close je 1x)
+
+  # Phase 3: "naked" (nackter Short Put) oder "put_spread" (zusaetzliche Long-Leg
+  # zur Verlustbegrenzung). spread_width nur relevant fuer put_spread (Indexpunkte
+  # Abstand der Long-Leg zur Short-Leg, z.B. 5 oder 10).
+  spread_type: naked
+  spread_width: null

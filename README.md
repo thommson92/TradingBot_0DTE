@@ -89,16 +89,19 @@ src/tradingbot_0dte/
     params.py                 StrategyParams (Strategie-Parameter)
     trade.py                  Trade-Record
     fills.py                  Fill-/Kommissionsmodell (Mid +/- Slippage)
-    strategy.py               Strike-Wahl (Ziel-Delta) + Exit-Logik
-    engine.py                 Event-Loop: run_day() / run()
+    strategy.py               Strike-Wahl (Ziel-Delta, Long-Leg) + Exit-Logik
+    engine.py                 Event-Loop: run_day() / run() (naked + put_spread)
     metrics.py                compute_metrics() (Win-Rate, P/L, Drawdown, Sharpe/Sortino, ...)
+    gridsearch.py              Parametermatrix, parallelisiert ueber Worker-Prozesse
 scripts/
   download_data.py            CLI: Daten laden
   check_data.py               CLI: Qualitaets-Report
-  run_backtest.py             CLI: Backtest nackter Short Put
+  run_backtest.py             CLI: Backtest (naked Short Put oder Put-Spread)
+  run_gridsearch.py           CLI: Grid-Search ueber Strategie-Parameter
 tests/
   test_pipeline_offline.py    Offline-Test Datenpipeline
   test_backtest_offline.py    Offline-Test Backtest-Engine
+  test_gridsearch_offline.py  Offline-Test Grid-Search-Bausteine
 docs/Projektplanung.md        Spezifikation & Entscheidungs-Log
 ```
 
@@ -175,7 +178,57 @@ gibt es keine definierte Kapitalbasis.
 **Performance:** ~10 Handelstage/Sekunde (1 Param-Satz) — fuer Phase 3
 (Parametermatrix x volle Historie) wird Parallelisierung noetig sein.
 
+---
+
+## Phase 3 — Put-Spreads + Grid-Search/Parallelisierung (aktuell implementiert)
+
+### Put-Spread
+
+Zweite Strategie-Variante neben dem nackten Short Put: eine zusaetzliche
+**Long-Put-Leg** (weiter OTM, Breite konfigurierbar, typ. 5 oder 10
+Indexpunkte) begrenzt den maximalen Verlust. Long-Leg-Wahl per Nearest-Match
+auf `short_strike - spread_width` (SPX-Strikeabstaende sind nicht ueberall
+exakt gleich breit). P&L/Exit-Schwellenwerte (Stop-Loss/Profit-Target/Zeit-
+Exit) laufen auf dem **Netto-Spread-Wert** (Kredit bei Eroeffnung, Kosten beim
+Schliessen), Kommission fuer 2 Legs statt 1.
+
+```bash
+python scripts/run_backtest.py --spread-type put_spread --spread-width 10 \
+    --start 2024-01-02 --end 2024-01-31
+```
+
+`spread_type` (`naked`/`put_spread`) und `spread_width` stehen ebenfalls unter
+`strategy:` in [config/settings.yaml](config/settings.yaml).
+
+### Grid-Search (parallelisiert)
+
+`scripts/run_gridsearch.py` fuehrt eine Parametermatrix (kartesisches Produkt
+ueber beliebige Achsen) parallel ueber `ProcessPoolExecutor` aus. Jeder
+Worker-Prozess laedt die historisierten Tagesdaten im Zeitraum **einmal** beim
+Start in einen prozesslokalen Cache und wertet darauf alle ihm zugewiesenen
+Parameter-Kombinationen aus — Disk-I/O wird nur `n_jobs`-mal bezahlt, nicht
+einmal pro Kombination (ersetzt die anfangs erwogene physische Parquet-
+Konsolidierung).
+
+```bash
+# 3 Ziel-Deltas x 2 Profit-Targets = 6 Kombinationen:
+python scripts/run_gridsearch.py --start 2024-01-02 --end 2024-01-31 \
+    --target-delta 0.10,0.16,0.20 --profit-target 0.20,0.30
+
+# Naked vs. Put-Spread (zwei Breiten) im selben Lauf, 8 Worker, Leaderboard speichern:
+python scripts/run_gridsearch.py --spread-type naked,put_spread \
+    --spread-width 5,10 --n-jobs 8 --top 10 --csv out/backtests/grid.csv
+```
+
+Nicht per Komma-Liste angegebene Optionen bleiben fix auf dem Config-/Basis-
+Wert (keine Achse). Ergebnis ist ein nach `--sort-by` (Default `total_pnl`)
+sortiertes Leaderboard: eine Zeile pro Parameter-Kombination.
+
+```bash
+python tests/test_backtest_offline.py     # inkl. Put-Spread-Tests
+python tests/test_gridsearch_offline.py   # build_param_grid + _run_one, ohne Prozess-Pool
+```
+
 ## Naechste Phasen
 
-- **Phase 3:** Parametermatrix (Grid-Search, parallelisiert) + Put-Spreads
 - **Phase 4:** Streamlit-Dashboard (Strategie-Vergleich, Chance/Risiko-Profil)

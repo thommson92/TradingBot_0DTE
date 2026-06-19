@@ -178,3 +178,44 @@ engine, metrics) + CLI `scripts/run_backtest.py` + `strategy:`-Abschnitt in
   `test_pipeline_offline.py`); Smoke-Test Januar 2024 (21 Trades, Win-Rate 71%,
   plausible Strikes/Exits) und Volljahr 2023 (250 Trades, ~30s Laufzeit,
   ~10 Handelstage/s) gegen die echten historisierten Daten geprüft.
+
+### 2026-06-19 — Phase 3: Put-Spreads + Grid-Search/Parallelisierung
+Erweitert `src/tradingbot_0dte/backtest/` um Put-Spread-Unterstützung (ohne
+Breaking Changes am nackten Put) + neues Modul `gridsearch.py` +
+CLI `scripts/run_gridsearch.py`. Setzt Entscheidungen #7 (Spread-Breite
+{5,10}), #12 (parallelisierte Grid-Search) und #14 (MVP-Reihenfolge) um.
+
+- **Long-Leg-Wahl per Nearest-Match:** `pick_long_leg()` sucht den Strike, der
+  `short_strike - spread_width` am nächsten liegt, statt einen exakten Match zu
+  verlangen — SPX-Strikeabstände sind nicht überall exakt gleich breit. Live
+  gegen echte Daten verifiziert: Januar 2024 liefert bei Breite 10 durchgehend
+  exakte `long_strike = short_strike - 10`-Treffer.
+- **Schwellenwert-Logik geteilt statt dupliziert:** `check_exit()` wurde in eine
+  gemeinsame `_check_thresholds()` (Stop-Loss → Profit-Target → Zeit-Exit,
+  unverändert) plus zwei dünne Wrapper aufgeteilt — `check_exit()` (nackter Put,
+  Signatur/Verhalten unverändert) und `check_exit_spread()` (Netto-Spread-Wert
+  als aktueller Preis). Bestehende 5 Phase-2-Tests bleiben unverändert grün.
+- **Grid-Search-Performance:** statt die Parquet-Dateien physisch zu
+  konsolidieren (in der vorherigen Diskussion erwogen und verworfen), lädt jeder
+  `ProcessPoolExecutor`-Worker die Tagesdaten im Zeitraum einmal beim Start
+  (Pool-`initializer`) in einen prozesslokalen Cache und wertet darauf alle ihm
+  zugewiesenen Parameter-Kombinationen aus. Disk-I/O wird nur `n_jobs`-mal
+  bezahlt, kein Pickle/IPC großer DataFrames zwischen Prozessen nötig.
+  Stdlib-`ProcessPoolExecutor` verwendet (kein neues Abhängigkeit zu `joblib`).
+- **Beobachtung Smoke-Test (Januar 2024, Breite 10):** Put-Spread liefert bei
+  gleichen Stop/Target-Parametern wie der nackte Put eine **niedrigere
+  Win-Rate** (57% vs. 71%) und negatives Gesamt-P&L (-287 USD vs. +538 USD beim
+  nackten Put im selben Zeitraum) — die Long-Leg verringert den Netto-Kredit
+  stark (typ. ~1.00–1.40 USD statt ~2.00 USD Prämie), wodurch der relative
+  2x-Stop-Loss-Schwellenwert schon bei kleineren Indexbewegungen greift. Das ist
+  ein erwartetes Charakteristikum enger Spreads (begrenzter Verlust, aber auch
+  empfindlichere relative Schwellenwerte) und kein Bug — eine Optimierung der
+  Stop/Target-Parameter speziell für Spreads ist Aufgabe der Grid-Search, nicht
+  dieser Phase.
+- **Verifiziert:** Offline-Tests grün (`test_backtest_offline.py` inkl. 2 neuer
+  Put-Spread-Tests, neues `test_gridsearch_offline.py`); Smoke-Test Put-Spread
+  Januar 2024 gegen echte Daten; Grid-Search-Smoke-Test (`naked,put_spread` x
+  Breite `5,10` = 4 Kombinationen, `--n-jobs 4`) — Ergebnis für
+  `put_spread/Breite 10` deckt sich exakt mit dem einzelnen Backtest-Lauf
+  (-287.40 USD), `spread_width` hat erwartungsgemäß keinen Effekt auf
+  `naked`-Zeilen.

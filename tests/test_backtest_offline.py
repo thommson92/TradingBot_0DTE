@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Offline-Test der Backtest-Engine (nackter Short Put) ohne Netzwerkzugriff.
+"""Offline-Test der Backtest-Engine (nackter Short Put + Put-Spread) ohne
+Netzwerkzugriff.
 
 Validiert: Strike-Wahl per Ziel-Delta, Exit-Prioritaet (Stop-Loss > Profit-Target
 > Zeit-Exit), Expiration-Fallback, das Mehrfach-Entry/Tag-Limit (Kernpunkt: "1
-Trade/Tag" ist kein festes Kriterium mehr) und compute_metrics().
+Trade/Tag" ist kein festes Kriterium mehr), Put-Spread (Long-Leg-Wahl + Netto-
+P&L) und compute_metrics().
 Aufruf: python tests/test_backtest_offline.py
 """
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pandas as pd
 from tradingbot_0dte.backtest.engine import run_day, trades_to_df
 from tradingbot_0dte.backtest.metrics import compute_metrics
 from tradingbot_0dte.backtest.params import StrategyParams
+from tradingbot_0dte.backtest.strategy import pick_long_leg
 from tradingbot_0dte.backtest.trade import Trade
 
 DATE = 20240105
@@ -127,6 +130,44 @@ def test_multi_entry_cap():
     print("[ok] mehrere Entry-Zeiten/Tag + konfigurierbares Limit (kein festes '1 Trade/Tag')")
 
 
+def test_pick_long_leg():
+    """Long-Leg-Wahl: nearest-match, kein exakter Strikeabstand noetig."""
+    snapshot = pd.DataFrame([
+        _bar("09:35:00", 4700.0, 9.0, 9.4, -0.80),
+        _bar("09:35:00", 4650.0, 2.0, 2.2, -0.16),
+        _bar("09:35:00", 4630.0, 1.0, 1.2, -0.10),
+        _bar("09:35:00", 4600.0, 0.3, 0.5, -0.04),
+    ])
+    row = pick_long_leg(snapshot, short_strike=4650.0, width=10.0)
+    assert row is not None and row["strike"] == 4630.0, "4630 liegt naeher an 4650-10=4640 als 4600"
+    print("[ok] pick_long_leg (nearest-match)")
+
+
+def test_put_spread_pnl():
+    """Put-Spread: Netto-Kredit bei Eroeffnung, Exit auf Spread-Netto-Wert,
+    Kommission fuer 2 Legs."""
+    rows = [
+        _bar("09:35:00", 4650.0, 2.0, 2.2, -0.16),
+        _bar("09:35:00", 4640.0, 0.5, 0.7, -0.08),
+        _bar("09:36:00", 4650.0, 0.3, 0.5, -0.05),
+        _bar("09:36:00", 4640.0, 0.05, 0.15, -0.02),
+    ]
+    df = pd.DataFrame(rows)
+    params = _base_params(spread_type="put_spread", spread_width=10.0)
+    trades = run_day(df, DATE, params)
+    assert len(trades) == 1
+    tr = trades[0]
+    assert tr.strike == 4650.0 and tr.long_strike == 4640.0
+    assert tr.exit_reason == "profit_target"
+    # entry_credit = sell_fill(2.0,2.2)=2.05 - buy_fill(0.5,0.7)=0.65 -> 1.40
+    assert math.isclose(tr.entry_price, 1.40, rel_tol=1e-9)
+    # exit_cost = buy_fill(0.3,0.5)=0.45 - sell_fill(0.05,0.15)=0.075 -> 0.375 (<= 1.40*0.30=0.42)
+    assert math.isclose(tr.exit_price, 0.375, rel_tol=1e-9)
+    # pnl = (1.40-0.375)*100 - commission(legs=2: 1.10*2*2=4.4) = 98.1
+    assert math.isclose(tr.pnl, 98.1, rel_tol=1e-9)
+    print("[ok] Put-Spread: Long-Leg-Wahl, Netto-Kredit/-Exit, 2-Leg-Kommission")
+
+
 def test_compute_metrics():
     base_ts = pd.Timestamp("2024-01-02 10:00:00")
     trades = [
@@ -159,6 +200,8 @@ def main():
     test_stop_loss()
     test_expiration_fallback()
     test_multi_entry_cap()
+    test_pick_long_leg()
+    test_put_spread_pnl()
     test_compute_metrics()
     print("\nAlle Backtest-Offline-Tests bestanden.")
 

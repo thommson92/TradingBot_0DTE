@@ -47,6 +47,8 @@ class StrategyConfig:
     time_exit_before_close_min: Optional[int]
     slippage_pct_of_spread: float
     commission_per_contract_leg: float
+    spread_type: str = "naked"
+    spread_width: Optional[float] = None
 
 
 @dataclass
@@ -111,6 +113,8 @@ def load_config(settings_path: Optional[Path] = None) -> Config:
         time_exit_before_close_min=(int(st["time_exit_before_close_min"]) if st.get("time_exit_before_close_min") is not None else None),
         slippage_pct_of_spread=float(st.get("slippage_pct_of_spread", 0.25)),
         commission_per_contract_leg=float(st.get("commission_per_contract_leg", 1.10)),
+        spread_type=str(st.get("spread_type", "naked")),
+        spread_width=(float(st["spread_width"]) if st.get("spread_width") is not None else None),
     )
 
     api_key = os.getenv("THETADATA_API_KEY")
