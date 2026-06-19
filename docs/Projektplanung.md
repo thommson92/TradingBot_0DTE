@@ -35,6 +35,10 @@ oder günstiger zurückgekauft werden.
 | 12 | Parallelisierung | **Ja** — Grid-Search über hunderte bis tausende Varianten. |
 | 13 | Live-Bot | **Vorerst außen vor.** |
 | 14 | MVP-Reihenfolge | **Bestätigt:** 1) Datenpipeline + Speicherung → 2) eine Strategie (nackter Short Put) → 3) Parametermatrix + Spreads. |
+| 15 (2026-06-19) | ML-Ansatz | **Gestaffelt:** zuerst Supervised-EV-Scorer (Gradient-Boosting), der den erwarteten Trade-Ausgang vorhersagt; RL als optionaler späterer Aufsatz. Begründung: bei nur 1088 Handelstagen ist reines RL überanpassungsanfällig und schwer validierbar; der Supervised-Ansatz reicht schneller ein belastbares Signal und nutzt die bestehende Engine als Label-Generator. |
+| 16 (2026-06-19) | Lern-Scope | **Entry zuerst gelernt** (Timing, Ziel-Delta, naked/Spread), **Exit zunächst regelbasiert** (fixe, grid-gesuchte Stop/Target/Zeit-Regel). Exits werden in einem Folgeschritt mitgelernt (Kandidatenraum erweitern). |
+| 17 (2026-06-19) | Validierung | **Walk-Forward** (rollierendes/expandierendes Training) **+ unberührtes Holdout-Jahr** (letzte ~12 Monate, nie für Training/Threshold-Tuning gesehen). Versöhnt „komplette Historie fürs Training" mit ehrlicher Out-of-Sample-Bewertung. |
+| 18 (2026-06-19) | Zielgröße | **Komposit-Ziel:** Balance aus hohem Gesamt-P&L, hoher Trefferquote und geringem Max-Drawdown (nicht eine einzelne Kennzahl). Wird als gewichteter/normierter Score auf der Walk-Forward-Equity-Kurve berechnet und zum Tuning der Policy-Schwelle genutzt. |
 
 ## 3. Abgeleitete Spezifikation (Entwurf)
 
@@ -258,3 +262,103 @@ Plotting-Paket).
   beide gespeicherten Läufe (Tabelle, Balkendiagramm, Scatter, Grid-Search-
   Drilldown) ohne Fehler. `use_container_width` (in dieser Streamlit-Version
   bereits über dem Removal-Datum) durch `width="stretch"` ersetzt.
+
+## 8. Phase 5 — ML-gesteuerte Entry-Strategie (Planung, 2026-06-19)
+
+> Status: **geplant**, noch nicht implementiert. Setzt Entscheidungen #15–#18 um.
+> Ziel: Die KI lernt aus der **kompletten Historie**, *wann*, mit *welchem Delta*
+> und als *naked Put oder Put-Spread* eröffnet wird — ohne feste Vorgaben bei
+> Uhrzeit, Delta oder Trade-Anzahl. Exit-Regeln bleiben in diesem Schritt fix
+> (regelbasiert), werden aber in einem Folgeschritt mitgelernt.
+
+### 8.1 Grundidee (Supervised-EV-Scorer als Contextual Bandit)
+Statt jede Minute „blind" zu handeln, bewertet ein Modell **Trade-Kandidaten**:
+- Ein **Kandidat** = (Entry-Zeit-Bar, Ziel-Delta-Bucket, Strategietyp ∈
+  {naked, spread-5, spread-10}).
+- **Features** = leakage-sicherer Marktzustand zum Entry-Zeitpunkt (nur Daten
+  bis zu diesem Bar).
+- **Label** = der **real simulierte P&L** dieses Kandidaten, erzeugt durch die
+  **bestehende Engine** (`_simulate_naked_entry` / `_simulate_spread_entry`) mit
+  einer fixen Exit-Regel. Zusätzlich Win-Flag und Exit-Grund.
+- Das Modell lernt also: „Gegeben dieser Marktzustand und dieser Kandidat —
+  welcher P&L / welche Gewinnwahrscheinlichkeit ist zu erwarten?"
+- **Policy** (Inferenz): an jedem Bar alle Kandidaten scoren; jene über einer
+  getunten Schwelle eröffnen. Keine harte Trade-Anzahl-Grenze (Wunsch des
+  Nutzers); mehrere/überlappende Trades/Tag erlaubt, P&L additiv (Optionen sind
+  unabhängige, cash-gesettelte Instrumente → keine komplexe Concurrency-Sim
+  nötig, jeder gewählte Trade wird einzeln durchsimuliert und tagesweise
+  summiert).
+
+### 8.2 Features (Entwurf, alle leakage-sicher zum Entry-Bar)
+- **Zeit:** Minuten seit Open, Minuten bis Close, Wochentag, (Monat).
+- **Underlying:** Return seit Open, Open-Gap ggü. Vortagesschluss, intraday
+  realisierte Vola (rollierende Minuten-Returns bis Entry).
+- **Vol-Surface:** ATM-IV, IV des Kandidaten-Strikes, einfacher Put-Skew
+  (IV(0.10Δ) − IV(0.30Δ)), IV-Änderung seit Open.
+- **Kandidat:** Ziel-Delta, Delta/Theta/Vega des gewählten Strikes, Prämie
+  (Credit) relativ zum Underlying, Spread-Breite (bei Spread), Bid/Ask-Spread
+  (Liquiditätsproxy).
+- Modul `ml/features.py`, rein aus `day_df` + Vortageskontext berechnet.
+
+### 8.3 Modell
+- **Default:** `sklearn.ensemble.HistGradientBoostingRegressor` (P&L-Regression)
+  **+** `…Classifier` (P(Win)). Bewusst gewählt, weil das venv auf **Python 3.14**
+  läuft und LightGBM/XGBoost dort evtl. noch keine Wheels haben; HGB ist dieselbe
+  Modellfamilie (histogrammbasiertes GBDT) ohne fragile Native-Abhängigkeit.
+- **Optionales Upgrade:** LightGBM, falls Wheel/Build verfügbar (gleiche
+  Schnittstelle, hinter einem Adapter gekapselt).
+- Interpretierbar: Feature-Importances + Permutation-Importance fürs Dashboard.
+
+### 8.4 Validierung & Overfitting-Schutz (Entscheidung #17)
+- **Walk-Forward:** expandierendes Trainingsfenster, Vorhersage auf dem jeweils
+  nächsten Block (z. B. quartalsweise), rollierend über 2022→2025.
+- **Purging/Embargo:** keine Überlappung zwischen Train- und Test-Tagen (0-DTE
+  → Trades enden am selben Tag, daher genügt ein Tages-Embargo).
+- **Holdout:** letzte ~12 Monate (≈ 2025-07 … 2026-06) werden **nie** fürs
+  Training oder Schwellen-Tuning angefasst — finaler Realitäts-Check.
+- Realistische Kosten sind bereits in der Engine (Slippage + Kommission).
+- Reporting immer **In-Sample vs. OOS vs. Holdout** nebeneinander.
+
+### 8.5 Komposit-Zielgröße (Entscheidung #18)
+- Per-Trade-Lernen liefert nur Scores; das **Portfolio-Ziel** wird auf der
+  Equity-Kurve der Policy bewertet (nutzt `metrics.compute_metrics`:
+  `total_pnl`, `win_rate`, `max_drawdown`).
+- **Komposit-Score** (Default, konfigurierbar): normierte, gewichtete
+  Kombination aus P&L↑, Win-Rate↑ und Max-Drawdown↓ (z. B.
+  Calmar-ähnlich `total_pnl / (1 + max_drawdown)` × Win-Rate-Faktor, mit
+  Win-Rate-Mindestschwelle). Die **Policy-Schwelle** (und erlaubte
+  Delta-Buckets/Strategietypen) werden auf den Walk-Forward-Validierungsblöcken
+  so gewählt, dass dieser Score maximal wird — Drawdown fließt also über die
+  Selektion ein, nicht per Trade.
+
+### 8.6 Geplante Module & CLIs
+- `src/tradingbot_0dte/ml/features.py` — Feature-Engineering.
+- `src/tradingbot_0dte/ml/labels.py` — Kandidat → simulierter P&L (Engine-Reuse).
+- `src/tradingbot_0dte/ml/dataset.py` — baut die Trainingstabelle (Tag × Kandidat
+  → Features + Label), parallelisiert analog Grid-Search; Cache als Parquet.
+- `src/tradingbot_0dte/ml/model.py` — Modell-Adapter (HGB-Default, LightGBM optional).
+- `src/tradingbot_0dte/ml/walkforward.py` — Splits, Training je Fold, OOS-Predict.
+- `src/tradingbot_0dte/ml/policy.py` — Scores → Trade-Entscheidungen (Schwellen-
+  Tuning); erzeugt ein Trade-Log im selben Format wie die Engine.
+- `src/tradingbot_0dte/ml/evaluate.py` — Komposit-Score + Equity-Kurve.
+- Scripts: `build_ml_dataset.py`, `train_ml.py`, `run_ml_backtest.py`.
+- Tests: `test_ml_features_offline.py`, `test_ml_dataset_offline.py`,
+  `test_ml_policy_offline.py` (synthetische Daten, kein Marktzugriff).
+- Neue Abhängigkeit: **scikit-learn** (LightGBM optional).
+
+### 8.7 Dashboard-Anbindung (Wunsch: Backtests im Dashboard ansehen)
+- Neue Seite `dashboard/pages/5_ML_Strategie.py`: Dataset bauen/laden, Modell
+  trainieren, Feature-Importances anzeigen, ML-Policy-Backtest starten und als
+  Lauf speichern.
+- Ergebnis landet über `dashboard/runs.py` im selben `runs_index.csv` →
+  **direkt vergleichbar** mit Grid-Search-/Einzel-Backtests auf der bestehenden
+  Vergleichsseite (Equity-Kurve, Win-Rate, Drawdown, Scatter).
+
+### 8.8 Umsetzungsreihenfolge (Vorschlag, je ein Commit)
+1. `features.py` + `labels.py` + Offline-Test.
+2. `dataset.py` (+ Script, Cache) — Trainingstabelle aus der Historie bauen.
+3. `model.py` + `walkforward.py` + `train_ml.py` — Training & OOS-Predict.
+4. `policy.py` + `evaluate.py` + `run_ml_backtest.py` — Policy, Komposit-Score,
+   Backtest-Lauf über die Engine.
+5. Dashboard-Seite + Vergleichsanbindung.
+6. (Später, separate Phase) Exit-Mitlernen; danach optional RL-Aufsatz.
