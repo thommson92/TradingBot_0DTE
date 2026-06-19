@@ -362,3 +362,29 @@ Statt jede Minute „blind" zu handeln, bewertet ein Modell **Trade-Kandidaten**
    Backtest-Lauf über die Engine.
 5. Dashboard-Seite + Vergleichsanbindung.
 6. (Später, separate Phase) Exit-Mitlernen; danach optional RL-Aufsatz.
+
+### 8.9 Umsetzungs-Log Phase 5
+
+**2026-06-19 — Schritt 1: ML-Features + Label-Simulation** (`ml/features.py`,
+`ml/labels.py`, `test_ml_features_offline.py`). Leakage-sicheres Feature-Set
+(Zeit/Underlying/Vol-Surface/Kandidat) + `simulate_candidate()`, das das Label
+(realer P&L) über die bestehenden Engine-Simulatoren erzeugt (eine Quelle der
+Wahrheit). 5 Offline-Tests inkl. Leakage-Prüfung; Smoke-Test gegen echte Daten.
+
+**2026-06-19 — Schritt 2: Dataset-Aufbau** (`ml/dataset.py`,
+`scripts/build_ml_dataset.py`, `test_ml_dataset_offline.py`).
+`CandidateGrid` (Entry-Zeiten × Ziel-Deltas × naked/Spread) → eine Zeile je
+Tag×Kandidat mit Features + Label, parallelisiert **über Tage** (jeder Tag genau
+einmal von Platte gelesen). `prev_close` (für `gap_open`) wird im Hauptprozess
+per DuckDB-`arg_max`-Scan vorab bestimmt und den Workern mitgegeben.
+- **Bekannte Kleinigkeit:** `gap_open` ist beim **ersten Tag eines Fensters**
+  NaN (kein Vortag im gefilterten Bereich) — bei einem Voll-Historie-Build genau
+  1 Tag (2022-01-03). HistGradientBoosting verarbeitet NaN nativ, daher
+  unkritisch; kein Imputieren nötig.
+- **Verifiziert:** 4 Offline-Tests grün; End-to-End-Lauf Januar 2024
+  (13 Entry-Zeiten × 3 Deltas × {naked, spread-10} = 78 Kandidaten/Tag →
+  1638 Zeilen, Win-Rate 70.7 %, ~1.8 s/Tag bei 6 Workern). Parquet-Cache unter
+  `out/ml/` (gitignored).
+- **Performance-Hinweis:** Das Default-Vollraster (26 Entry-Zeiten × 5 Deltas ×
+  3 Spread-Typen = 390 Kandidaten/Tag × 1088 Tage) ist ein einmaliger
+  Cache-Build von grob 1–3 h; Rastergröße ist per CLI frei wählbar.
