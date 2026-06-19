@@ -457,3 +457,21 @@ positiv, auf OOS und Holdout. `pnl_hat` schlägt `win_proba` klar als Selektor
   (kind='ml_backtest' → erscheint auf der bestehenden Vergleichsseite).
 - **Grösstes offenes Potenzial:** Die fixe Exit-Regel (Basis-Ø −5) ist
   suboptimal; gelernte Exits (Schritt 6) sind der nächste Hebel.
+
+**2026-06-19 — Schritt 5: Dashboard-Seite ML-Strategie**
+(`dashboard/pages/4_ML_Strategie.py`, `dashboard/app.py`-Hinweis).
+- **Policy-Explorer:** lädt die per CLI erzeugten OOS-/Holdout-Vorhersagen, zeigt
+  die Tuning-Tabelle (Per-Tag-Top-N, Komposit/Calmar), lässt N + pnl_hat-Floor
+  interaktiv wählen und stellt **Holdout vs. OOS** (Metriken + Equity-Kurven, in
+  Tabs) gegenüber. Holdout-Lauf speicherbar → erscheint auf der Vergleichsseite.
+- **Modell-Training** als Subprozess (`scripts/train_ml.py`) aus dem Status-
+  Expander; der schwere Dataset-Build bleibt bewusst CLI-only.
+- Die Vergleichsseite ist typ-agnostisch (liest nur `runs_index.csv`) → ML-Läufe
+  (kind='ml_backtest') erscheinen ohne Anpassung neben Backtests/Grid-Search.
+- **Verifiziert:** AppTest-Smoke-Tests (kein Browser) für ML-, Vergleichs- und
+  Home-Seite ohne Exception gegen die echten Artefakte; ML-Seite zeigt das
+  getunte N=2 und die korrekten Holdout-Metriken. Alle 8 Offline-Tests grün.
+
+**→ Phase 5 (Schritte 1–5) abgeschlossen:** Supervised-EV-Pipeline von Features
+über Dataset, Modell/Walk-Forward, robuste Top-N-Policy bis Dashboard, out-of-
+sample validiert. Offen: Schritt 6 (gelernte Exits), danach optional RL-Aufsatz.

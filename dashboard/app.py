@@ -53,6 +53,8 @@ st.markdown(
   Put-Spread), starten und Ergebnis (Metrics, Equity-Kurve, Trade-Log) ansehen.
 - **Grid-Search** — Parametermatrix ueber mehrere Achsen parallel auswerten,
   Leaderboard + Risiko/Ertrag-Scatter.
-- **Vergleich** — gespeicherte Laeufe (Backtest + Grid-Search) gegenueberstellen.
+- **ML-Strategie** — Supervised-EV-Modell: Policy-Explorer (Per-Tag-Top-N),
+  OOS- vs. Holdout-Bewertung, Holdout-Lauf speichern.
+- **Vergleich** — gespeicherte Laeufe (Backtest, Grid-Search, ML) gegenueberstellen.
 """
 )
