@@ -25,7 +25,15 @@ import streamlit as st
 import runs
 from tradingbot_0dte.config import project_root
 from tradingbot_0dte.ml.evaluate import policy_metrics, to_trade_log, tune_top_n
-from tradingbot_0dte.ml.policy import select_trades
+from tradingbot_0dte.ml.policy import ENTRY_KEY, select_trades
+
+
+def _has_learned_exits(df: pd.DataFrame) -> bool:
+    keys = [k for k in ENTRY_KEY if k in df.columns]
+    if not keys or df.empty:
+        return False
+    # dropna=False: spread_width ist bei naked NaN -> sonst faellt der ganze Frame raus.
+    return bool((df.groupby(keys, dropna=False).size() > 1).any())
 
 st.set_page_config(page_title="ML-Strategie", page_icon="🤖")
 
@@ -105,11 +113,19 @@ st.write(
     "Schwelle. N wird auf den OOS-Daten getunt und unveraendert aufs Holdout angewandt."
 )
 
+learned_exits = _has_learned_exits(oos)
+if learned_exits:
+    st.info(
+        "**Gelernte Exits aktiv (Schritt 6):** das Modell scort (Entry × Exit)-"
+        "Kombinationen; je Gelegenheit wird die beste Exit-Variante gewaehlt, bevor "
+        "Top-N greift."
+    )
+
 c1, c2 = st.columns(2)
 floor = c1.number_input("pnl_hat-Floor (nur Kandidaten mit erwartetem P&L >=)", value=0.0, step=5.0)
 min_win = c2.number_input("Win-Rate-Mindestschwelle (Komposit)", value=0.62, min_value=0.0, max_value=1.0, step=0.01)
 
-best, table = tune_top_n(oos, pnl_hat_floor=floor, min_win_rate=min_win)
+best, table = tune_top_n(oos, pnl_hat_floor=floor, min_win_rate=min_win, collapse_exits=learned_exits)
 tuned_n = int(best["n_per_day"])
 
 st.markdown("**Tuning auf OOS** (Komposit = Calmar mit Win-Rate-Schwelle):")
@@ -121,8 +137,8 @@ n = st.slider("Trades/Tag (N) — Default = auf OOS getunt", 1, 10, value=tuned_
 if n != tuned_n:
     st.caption("Getunter Wert waere N=%d." % tuned_n)
 
-oos_sel = select_trades(oos, floor, max_trades_per_day=n)
-hold_sel = select_trades(holdout, floor, max_trades_per_day=n)
+oos_sel = select_trades(oos, floor, max_trades_per_day=n, collapse_exits_first=learned_exits)
+hold_sel = select_trades(holdout, floor, max_trades_per_day=n, collapse_exits_first=learned_exits)
 m_oos = policy_metrics(oos_sel)
 m_hold = policy_metrics(hold_sel)
 
@@ -140,7 +156,7 @@ if not hold_sel.empty:
     label = st.text_input("Run-Label", value="ML-Policy N=%d (Holdout)" % n)
     if st.button("Holdout-Lauf speichern"):
         info = {"policy": "per_day_top_n", "n_per_day": n, "pnl_hat_floor": floor,
-                "min_win_rate": min_win, "segment": "holdout"}
+                "min_win_rate": min_win, "segment": "holdout", "learned_exits": bool(learned_exits)}
         row = runs.save_ml_run(
             OUT_DIR, label, str(int(holdout["date"].min())), str(int(holdout["date"].max())),
             m_hold, hold_sel, info,

@@ -27,9 +27,12 @@ from ..backtest.strategy import pick_strike
 from ..config import Config
 from ..storage import MarketData
 from .features import FEATURE_COLUMNS, candidate_features, market_features
-from .labels import Candidate, ExitRule, simulate_candidate
+from .labels import Candidate, ExitRule, ExitSpec, effective_exit, simulate_candidate_exits
 
-META_COLUMNS = ["date", "entry_time", "target_delta", "spread_type", "spread_width"]
+META_COLUMNS = [
+    "date", "entry_time", "target_delta", "spread_type", "spread_width",
+    "profit_target_pct", "stop_loss_multiplier", "time_exit_min",
+]
 LABEL_COLUMNS = [
     "tradable", "pnl", "is_win", "exit_reason",
     "strike", "long_strike", "entry_price", "exit_price",
@@ -43,22 +46,32 @@ SpreadSpec = Tuple[str, Optional[float]]
 @dataclass
 class CandidateGrid:
     """Das Kandidatenraster, ueber das pro Tag eine Trainingszeile je Kombination
-    erzeugt wird (kartesisches Produkt der drei Achsen)."""
+    erzeugt wird (kartesisches Produkt der Achsen).
+
+    Achsen: Entry-Zeit x Ziel-Delta x Spread-Typ x Exit-Spec. Die Exit-Achse
+    (Schritt 6) ist per Default eine einzige Spec (= altes Verhalten mit fixer
+    Exit-Regel); mehrere Specs lassen das Modell Exits mitlernen."""
     entry_times: List[str]
     target_deltas: List[float]
     spreads: List[SpreadSpec]
     delta_low: float = 0.01
     delta_high: float = 0.50
+    exit_specs: Optional[List[ExitSpec]] = None  # None -> [ExitSpec()] (eine fixe Regel)
+
+    def specs(self) -> List[ExitSpec]:
+        return self.exit_specs if self.exit_specs else [ExitSpec()]
 
     def expand(self) -> List[Candidate]:
         out: List[Candidate] = []
         for et in self.entry_times:
             for td in self.target_deltas:
                 for stype, width in self.spreads:
-                    out.append(Candidate(
-                        entry_time=et, target_delta=td, spread_type=stype,
-                        spread_width=width, delta_low=self.delta_low, delta_high=self.delta_high,
-                    ))
+                    for spec in self.specs():
+                        out.append(Candidate(
+                            entry_time=et, target_delta=td, spread_type=stype,
+                            spread_width=width, delta_low=self.delta_low, delta_high=self.delta_high,
+                            exit_spec=spec,
+                        ))
         return out
 
 
@@ -95,6 +108,20 @@ def _label_from_trade(trade) -> dict:
     }
 
 
+def _entry_key(c: Candidate) -> Tuple:
+    """Die exit-unabhaengige Entry-Identitaet eines Kandidaten -- alle Kandidaten
+    mit gleichem Key teilen Strike-Wahl/Entry-Fill und damit dasselbe Engine-Setup."""
+    return (c.entry_time, c.target_delta, c.spread_type, c.spread_width)
+
+
+def _exit_meta(spec: ExitSpec) -> dict:
+    return {
+        "profit_target_pct": spec.profit_target_pct if spec.profit_target_pct is not None else np.nan,
+        "stop_loss_multiplier": spec.stop_loss_multiplier if spec.stop_loss_multiplier is not None else np.nan,
+        "time_exit_min": spec.time_exit_before_close_min if spec.time_exit_before_close_min is not None else np.nan,
+    }
+
+
 def build_day_rows(
     day_df: pd.DataFrame,
     date: int,
@@ -104,9 +131,12 @@ def build_day_rows(
 ) -> List[dict]:
     """Erzeugt alle Trainingszeilen eines Tages.
 
-    Die market_features sind kandidatenunabhaengig und werden je Entry-Zeit nur
-    EINMAL berechnet (Kandidaten desselben Bars teilen sie). Strike-Wahl (Features)
-    und Label-Simulation nutzen dieselbe pick_strike-Logik -> selber Strike.
+    market_features sind kandidatenunabhaengig und werden je Entry-Zeit nur EINMAL
+    berechnet. Innerhalb einer Entry-Zeit werden Kandidaten zusaetzlich nach ihrer
+    exit-unabhaengigen Entry-Identitaet gruppiert: das Engine-Setup (Strike-Wahl,
+    Entry-Fill, Strike-Zeitreihe) entsteht je Gruppe nur einmal, die verschiedenen
+    Exit-Specs teilen es (Schritt 6). Strike-Wahl (Features) und Label-Simulation
+    nutzen dieselbe pick_strike-Logik -> selber Strike.
     """
     if day_df.empty:
         return []
@@ -123,27 +153,35 @@ def build_day_rows(
         entry_ts = snapshot["timestamp"].iloc[0]
         mf = market_features(day_df, snapshot, entry_ts, prev_close)
 
+        groups: Dict[Tuple, List[Candidate]] = {}
         for c in cands:
-            entry_row = pick_strike(snapshot, c.target_delta, c.delta_low, c.delta_high)
-            cf = candidate_features(entry_row, c, mf["underlying"])
-            trade, _ = simulate_candidate(day_df, date, c, exit_rule)
+            groups.setdefault(_entry_key(c), []).append(c)
 
-            row = {
-                "date": date,
-                "entry_time": entry_time,
-                "target_delta": c.target_delta,
-                "spread_type": c.spread_type,
-                "spread_width": c.spread_width if c.spread_width is not None else np.nan,
-            }
-            row.update(mf)
-            row.update(cf)
-            # NaN-P&L (z. B. Expiration-Fallback auf einem Bar ohne Quote) als nicht
-            # handelbar werten -> kein fehletikettiertes Label im Training.
-            if trade is not None and np.isfinite(trade.pnl):
-                row.update(_label_from_trade(trade))
-            else:
-                row.update(_empty_label())
-            rows.append(row)
+        for group in groups.values():
+            base = group[0]
+            entry_row = pick_strike(snapshot, base.target_delta, base.delta_low, base.delta_high)
+            specs = [effective_exit(c, exit_rule) for c in group]
+            results = simulate_candidate_exits(day_df, snapshot, date, base, specs, exit_rule)
+
+            for c, (spec, trade) in zip(group, results):
+                cf = candidate_features(entry_row, c, mf["underlying"], spec)
+                row = {
+                    "date": date,
+                    "entry_time": entry_time,
+                    "target_delta": c.target_delta,
+                    "spread_type": c.spread_type,
+                    "spread_width": c.spread_width if c.spread_width is not None else np.nan,
+                }
+                row.update(_exit_meta(spec))
+                row.update(mf)
+                row.update(cf)
+                # NaN-P&L (z. B. Expiration-Fallback auf einem Bar ohne Quote) als nicht
+                # handelbar werten -> kein fehletikettiertes Label im Training.
+                if trade is not None and np.isfinite(trade.pnl):
+                    row.update(_label_from_trade(trade))
+                else:
+                    row.update(_empty_label())
+                rows.append(row)
     return rows
 
 

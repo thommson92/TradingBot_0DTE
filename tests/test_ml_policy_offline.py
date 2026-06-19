@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from tradingbot_0dte.ml.evaluate import composite_score, policy_metrics, to_trade_log, tune_threshold, tune_top_n
-from tradingbot_0dte.ml.policy import select_trades
+from tradingbot_0dte.ml.policy import collapse_exits, select_trades
 import runs as dashboard_runs
 
 
@@ -110,6 +110,49 @@ def test_tune_top_n():
     print("[ok] tune_top_n (kausale Per-Tag-Top-N-Policy)")
 
 
+def _scored_with_exits() -> pd.DataFrame:
+    """Zwei Entry-Gelegenheiten je Tag, jede mit drei Exit-Varianten (gleicher
+    Entry-Key, unterschiedliche Exit-Meta + pnl_hat)."""
+    rows = []
+    for d in (20230102, 20230103):
+        for et, td in [("10:00:00", 0.16), ("11:00:00", 0.10)]:
+            for i, (pt, score, pnl) in enumerate([(0.30, 5.0, 20.0), (0.50, 9.0, 30.0), (None, 3.0, -10.0)]):
+                rows.append({
+                    "date": d, "entry_time": et, "target_delta": td,
+                    "spread_type": "naked", "spread_width": float("nan"),
+                    "profit_target_pct": pt, "pnl": pnl, "is_win": 1.0 if pnl > 0 else 0.0,
+                    "pnl_hat": score, "win_proba": 0.7,
+                })
+    return pd.DataFrame(rows)
+
+
+def test_collapse_exits():
+    """collapse_exits behaelt je Entry-Gelegenheit nur die hoechstbewertete Exit-Variante."""
+    df = _scored_with_exits()
+    collapsed = collapse_exits(df)
+    # 2 Tage x 2 Gelegenheiten = 4 Zeilen (statt 12)
+    assert len(collapsed) == 4
+    assert (collapsed.groupby(["date", "entry_time"]).size() == 1).all()
+    # jeweils die Variante mit hoechstem pnl_hat (=9.0, profit_target 0.50)
+    assert (collapsed["pnl_hat"] == 9.0).all()
+    assert (collapsed["profit_target_pct"] == 0.50).all()
+    # ohne Entry-Key-Spalten unveraendert (Rueckwaerts-Kompatibilitaet)
+    bare = pd.DataFrame({"pnl_hat": [1.0, 2.0], "pnl": [1.0, 2.0]})
+    assert len(collapse_exits(bare)) == 2
+    print("[ok] collapse_exits (beste Exit-Variante je Entry-Gelegenheit)")
+
+
+def test_select_trades_collapse_then_top_n():
+    """Mit collapse_exits_first waehlt Top-N je Tag aus den kollabierten Gelegenheiten
+    (nicht aus near-identischen Exit-Varianten derselben Gelegenheit)."""
+    df = _scored_with_exits()
+    sel = select_trades(df, 0.0, max_trades_per_day=1, collapse_exits_first=True)
+    assert (sel.groupby("date").size() == 1).all()
+    # gewaehlt: die beste Gelegenheit des Tages, mit ihrer besten Exit-Variante
+    assert (sel["pnl_hat"] == 9.0).all() and (sel["profit_target_pct"] == 0.50).all()
+    print("[ok] select_trades (collapse_exits_first + Top-N)")
+
+
 def test_save_ml_run():
     df = _scored()
     sel = select_trades(df, df["pnl_hat"].quantile(0.8))
@@ -131,6 +174,8 @@ def main():
     test_composite_score()
     test_tune_threshold_picks_profitable()
     test_tune_top_n()
+    test_collapse_exits()
+    test_select_trades_collapse_then_top_n()
     test_save_ml_run()
     print("\nAlle ML-Policy-Offline-Tests bestanden.")
 

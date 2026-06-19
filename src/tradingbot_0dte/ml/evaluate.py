@@ -59,6 +59,7 @@ def tune_top_n(
     n_values: Iterable[int] = DEFAULT_N_GRID,
     pnl_hat_floor: float = 0.0,
     min_win_rate: float = 0.60,
+    collapse_exits: bool = False,
 ) -> Tuple[dict, pd.DataFrame]:
     """Tunt die *kausale* Per-Tag-Top-N-Policy: je Tag die N Kandidaten mit dem
     hoechsten pnl_hat (>= pnl_hat_floor) eroeffnen. N wird auf den OOS-Scores nach
@@ -67,10 +68,14 @@ def tune_top_n(
     Dies ist die robuste, realistische Policy-Formulierung (ein Live-Bot rankt
     taeglich seine Kandidaten und nimmt die besten N): relativ statt absolut, daher
     immun gegen Score-Drift zwischen Zeitraeumen und ohne Zukunftsblick -- im
-    Gegensatz zu einer absoluten pnl_hat-Schwelle, die nicht generalisierte."""
+    Gegensatz zu einer absoluten pnl_hat-Schwelle, die nicht generalisierte.
+
+    collapse_exits (Schritt 6): bei gelernten Exits zuerst je Entry-Gelegenheit die
+    beste Exit-Variante waehlen, bevor Top-N greift."""
     rows = []
     for n in n_values:
-        sel = select_trades(oos_scored, pnl_hat_floor, max_trades_per_day=int(n))
+        sel = select_trades(oos_scored, pnl_hat_floor, max_trades_per_day=int(n),
+                            collapse_exits_first=collapse_exits)
         m = policy_metrics(sel)
         rows.append({
             "n_per_day": int(n), "pnl_hat_floor": pnl_hat_floor,

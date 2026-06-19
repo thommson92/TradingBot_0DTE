@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import asdict
-from typing import List, Optional
+from dataclasses import asdict, dataclass
+from typing import List, Optional, Tuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -43,54 +43,88 @@ def _cutoff_time(day_df: pd.DataFrame, minutes_before_close: Optional[int]) -> O
     return (close_ts - dt.timedelta(minutes=minutes_before_close)).time()
 
 
+@dataclass
+class NakedSetup:
+    """Entry-Seite des nackten Short Put -- haengt NICHT von der Exit-Regel ab und
+    wird daher fuer mehrere Exit-Varianten desselben Entrys einmal aufgebaut
+    (Schritt 6: gelernte Exits ueber ein erweitertes Kandidatenraster)."""
+    entry_ts: object
+    strike: float
+    entry_delta: float
+    entry_price: float
+    series: pd.DataFrame
+
+
+def _naked_setup(day_df: pd.DataFrame, snapshot: pd.DataFrame, params: StrategyParams) -> Optional[NakedSetup]:
+    """Waehlt den Short-Strike, berechnet den Entry-Fill und schneidet die
+    Strike-Zeitreihe ab Entry zu -- der teure Tagesfilter passiert hier nur einmal."""
+    row = pick_strike(snapshot, params.target_delta, params.delta_low, params.delta_high)
+    if row is None:
+        return None
+    entry_ts = row["timestamp"]
+    strike = row["strike"]
+    series = day_df[(day_df["strike"] == strike) & (day_df["timestamp"] >= entry_ts)].sort_values("timestamp")
+    return NakedSetup(
+        entry_ts=entry_ts, strike=strike, entry_delta=row["delta"],
+        entry_price=entry_fill(row["bid"], row["ask"], params.slippage_pct_of_spread),
+        series=series,
+    )
+
+
+def _naked_exit_walk(
+    setup: NakedSetup, params: StrategyParams, cutoff_time: Optional[dt.time],
+) -> Tuple[str, float, object]:
+    """Laeuft die Strike-Zeitreihe ab und liefert (exit_reason, exit_price, exit_ts)
+    fuer die gegebene Exit-Regel. Reines Wiederholen je Exit-Variante, ohne den
+    Tagesfilter erneut zu zahlen."""
+    for _, bar in setup.series.iterrows():
+        if bar["timestamp"] == setup.entry_ts:
+            continue
+        result = check_exit(setup.entry_price, bar, params, cutoff_time)
+        if result is not None:
+            return result[0], result[1], bar["timestamp"]
+
+    last_bar = setup.series.iloc[-1]
+    exit_price = exit_fill(last_bar["bid"], last_bar["ask"], params.slippage_pct_of_spread)
+    return "expiration", exit_price, last_bar["timestamp"]
+
+
+def _naked_trade(setup: NakedSetup, date: int, params: StrategyParams,
+                 exit_reason: str, exit_price: float, exit_ts) -> Trade:
+    pnl = trade_pnl(setup.entry_price, exit_price, params.commission_per_contract_leg, legs=LEGS_NAKED_PUT)
+    return Trade(
+        date=date, entry_ts=setup.entry_ts, exit_ts=exit_ts, strike=setup.strike,
+        entry_delta=setup.entry_delta, entry_price=setup.entry_price, exit_price=exit_price,
+        exit_reason=exit_reason, pnl=pnl,
+    )
+
+
 def _simulate_naked_entry(
     day_df: pd.DataFrame, snapshot: pd.DataFrame, date: int,
     params: StrategyParams, cutoff_time: Optional[dt.time],
 ) -> Optional[Trade]:
     """Simuliert den nackten Short Put ab einem Entry-Snapshot bis zum Exit."""
-    row = pick_strike(snapshot, params.target_delta, params.delta_low, params.delta_high)
-    if row is None:
+    setup = _naked_setup(day_df, snapshot, params)
+    if setup is None:
         return None
-
-    entry_ts = row["timestamp"]
-    strike = row["strike"]
-    entry_delta = row["delta"]
-    entry_price = entry_fill(row["bid"], row["ask"], params.slippage_pct_of_spread)
-
-    series = day_df[(day_df["strike"] == strike) & (day_df["timestamp"] >= entry_ts)].sort_values("timestamp")
-
-    exit_reason: Optional[str] = None
-    exit_price: Optional[float] = None
-    exit_ts: Optional[dt.datetime] = None
-    for _, bar in series.iterrows():
-        if bar["timestamp"] == entry_ts:
-            continue
-        result = check_exit(entry_price, bar, params, cutoff_time)
-        if result is not None:
-            exit_reason, exit_price = result
-            exit_ts = bar["timestamp"]
-            break
-
-    if exit_reason is None:
-        last_bar = series.iloc[-1]
-        exit_ts = last_bar["timestamp"]
-        exit_price = exit_fill(last_bar["bid"], last_bar["ask"], params.slippage_pct_of_spread)
-        exit_reason = "expiration"
-
-    pnl = trade_pnl(entry_price, exit_price, params.commission_per_contract_leg, legs=LEGS_NAKED_PUT)
-    return Trade(
-        date=date, entry_ts=entry_ts, exit_ts=exit_ts, strike=strike,
-        entry_delta=entry_delta, entry_price=entry_price, exit_price=exit_price,
-        exit_reason=exit_reason, pnl=pnl,
-    )
+    exit_reason, exit_price, exit_ts = _naked_exit_walk(setup, params, cutoff_time)
+    return _naked_trade(setup, date, params, exit_reason, exit_price, exit_ts)
 
 
-def _simulate_spread_entry(
-    day_df: pd.DataFrame, snapshot: pd.DataFrame, date: int,
-    params: StrategyParams, cutoff_time: Optional[dt.time],
-) -> Optional[Trade]:
-    """Simuliert den Put-Spread (Short-Leg per Ziel-Delta, Long-Leg per Breite)
-    ab einem Entry-Snapshot bis zum Exit der Spread-Position."""
+@dataclass
+class SpreadSetup:
+    """Entry-Seite des Put-Spreads (exit-regel-unabhaengig, fuer mehrere Exit-Varianten)."""
+    entry_ts: object
+    short_strike: float
+    long_strike: float
+    entry_delta: float
+    entry_credit: float
+    bars: list  # itertuples-Liste (Timestamp + bid/ask je Leg), Dtypes erhalten
+
+
+def _spread_setup(day_df: pd.DataFrame, snapshot: pd.DataFrame, params: StrategyParams) -> Optional[SpreadSetup]:
+    """Waehlt Short-/Long-Leg, berechnet den Entry-Credit und merged die Leg-Reihen
+    einmal -- teure Filter/Merge passieren hier nur einmal je Entry."""
     short_row = pick_strike(snapshot, params.target_delta, params.delta_low, params.delta_high)
     if short_row is None:
         return None
@@ -101,7 +135,6 @@ def _simulate_spread_entry(
     entry_ts = short_row["timestamp"]
     short_strike = short_row["strike"]
     long_strike = long_row["strike"]
-    entry_delta = short_row["delta"]
     entry_credit = sell_fill(short_row["bid"], short_row["ask"], params.slippage_pct_of_spread) - \
         buy_fill(long_row["bid"], long_row["ask"], params.slippage_pct_of_spread)
 
@@ -118,34 +151,52 @@ def _simulate_spread_entry(
     # der Schwellenwert-Vergleich (NaT >= float) wuerfe einen TypeError. itertuples
     # erhaelt die Dtypes pro Feld (NaN bleibt float-NaN -> Vergleich liefert False).
     bars = list(merged.itertuples(index=False))
+    return SpreadSetup(
+        entry_ts=entry_ts, short_strike=short_strike, long_strike=long_strike,
+        entry_delta=short_row["delta"], entry_credit=entry_credit, bars=bars,
+    )
 
-    exit_reason: Optional[str] = None
-    exit_cost: Optional[float] = None
-    exit_ts: Optional[dt.datetime] = None
-    for r in bars:
-        if r.timestamp == entry_ts:
+
+def _spread_exit_walk(
+    setup: SpreadSetup, params: StrategyParams, cutoff_time: Optional[dt.time],
+) -> Tuple[str, float, object]:
+    """Laeuft die gemergte Spread-Zeitreihe ab und liefert (reason, exit_cost, ts)."""
+    for r in setup.bars:
+        if r.timestamp == setup.entry_ts:
             continue
         short_bar = {"timestamp": r.timestamp, "bid": r.bid_short, "ask": r.ask_short}
         long_bar = {"timestamp": r.timestamp, "bid": r.bid_long, "ask": r.ask_long}
-        result = check_exit_spread(entry_credit, short_bar, long_bar, params, cutoff_time)
+        result = check_exit_spread(setup.entry_credit, short_bar, long_bar, params, cutoff_time)
         if result is not None:
-            exit_reason, exit_cost = result
-            exit_ts = r.timestamp
-            break
+            return result[0], result[1], r.timestamp
 
-    if exit_reason is None:
-        last_row = bars[-1]
-        exit_ts = last_row.timestamp
-        exit_cost = buy_fill(last_row.bid_short, last_row.ask_short, params.slippage_pct_of_spread) - \
-            sell_fill(last_row.bid_long, last_row.ask_long, params.slippage_pct_of_spread)
-        exit_reason = "expiration"
+    last_row = setup.bars[-1]
+    exit_cost = buy_fill(last_row.bid_short, last_row.ask_short, params.slippage_pct_of_spread) - \
+        sell_fill(last_row.bid_long, last_row.ask_long, params.slippage_pct_of_spread)
+    return "expiration", exit_cost, last_row.timestamp
 
-    pnl = trade_pnl(entry_credit, exit_cost, params.commission_per_contract_leg, legs=LEGS_PUT_SPREAD)
+
+def _spread_trade(setup: SpreadSetup, date: int, params: StrategyParams,
+                  exit_reason: str, exit_cost: float, exit_ts) -> Trade:
+    pnl = trade_pnl(setup.entry_credit, exit_cost, params.commission_per_contract_leg, legs=LEGS_PUT_SPREAD)
     return Trade(
-        date=date, entry_ts=entry_ts, exit_ts=exit_ts, strike=short_strike, long_strike=long_strike,
-        entry_delta=entry_delta, entry_price=entry_credit, exit_price=exit_cost,
-        exit_reason=exit_reason, pnl=pnl,
+        date=date, entry_ts=setup.entry_ts, exit_ts=exit_ts, strike=setup.short_strike,
+        long_strike=setup.long_strike, entry_delta=setup.entry_delta,
+        entry_price=setup.entry_credit, exit_price=exit_cost, exit_reason=exit_reason, pnl=pnl,
     )
+
+
+def _simulate_spread_entry(
+    day_df: pd.DataFrame, snapshot: pd.DataFrame, date: int,
+    params: StrategyParams, cutoff_time: Optional[dt.time],
+) -> Optional[Trade]:
+    """Simuliert den Put-Spread (Short-Leg per Ziel-Delta, Long-Leg per Breite)
+    ab einem Entry-Snapshot bis zum Exit der Spread-Position."""
+    setup = _spread_setup(day_df, snapshot, params)
+    if setup is None:
+        return None
+    exit_reason, exit_cost, exit_ts = _spread_exit_walk(setup, params, cutoff_time)
+    return _spread_trade(setup, date, params, exit_reason, exit_cost, exit_ts)
 
 
 def run_day(day_df: pd.DataFrame, date: int, params: StrategyParams) -> List[Trade]:

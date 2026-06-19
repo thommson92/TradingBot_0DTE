@@ -11,6 +11,7 @@ Aufruf: python tests/test_ml_dataset_offline.py
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 
 from tradingbot_0dte.ml.dataset import (
-    CandidateGrid, DATASET_COLUMNS, ExitRule, build_day_rows, default_entry_times,
+    CandidateGrid, DATASET_COLUMNS, ExitRule, ExitSpec, build_day_rows, default_entry_times,
 )
 
 DATE = 20240105
@@ -112,11 +113,69 @@ def test_build_day_rows_shared_market_features():
     print("[ok] build_day_rows teilt market_features je Entry-Zeit")
 
 
+def test_grid_expand_exit_axis():
+    """Exit-Achse (Schritt 6): kartesisches Produkt inkl. Exit-Specs; je Kandidat
+    eine ExitSpec."""
+    grid = CandidateGrid(
+        entry_times=["09:35:00"], target_deltas=[0.16], spreads=[("naked", None)],
+        exit_specs=[ExitSpec(0.30, 2.0, 5), ExitSpec(0.50, 3.0, None)],
+    )
+    cands = grid.expand()
+    assert len(cands) == 1 * 1 * 1 * 2, "1x1x1 Entry x 2 Exit-Specs"
+    assert all(c.exit_spec is not None for c in cands)
+    specs = {(c.exit_spec.profit_target_pct, c.exit_spec.stop_loss_multiplier,
+              c.exit_spec.time_exit_before_close_min) for c in cands}
+    assert (0.30, 2.0, 5) in specs and (0.50, 3.0, None) in specs
+    print("[ok] CandidateGrid.expand mit Exit-Achse")
+
+
+def test_build_day_rows_exit_axis_and_consistency():
+    """Mehrere Exit-Specs je Entry: eine Zeile je Spec, korrekte Exit-Meta/-Features;
+    das geteilte Setup liefert dasselbe Label wie eine Einzelsimulation (Konsistenz)."""
+    rows_data = [
+        _bar("09:35:00", 4650.0, 2.0, 2.2, -0.16),
+        _bar("09:36:00", 4650.0, 0.4, 0.6, -0.05),   # mid 0.5 -> Profit-Target bei 0.30
+        _bar("09:37:00", 4650.0, 0.4, 0.6, -0.04),
+    ]
+    day = pd.DataFrame(rows_data)
+    # Zwei Exit-Specs: aggressives Profit-Target (greift) vs. keins (Halten bis Ende).
+    grid = CandidateGrid(
+        entry_times=["09:35:00"], target_deltas=[0.16], spreads=[("naked", None)],
+        delta_low=0.05, delta_high=0.20,
+        exit_specs=[ExitSpec(0.30, 2.0, None), ExitSpec(None, None, None)],
+    )
+    exit_rule = ExitRule(slippage_pct_of_spread=0.25, commission_per_contract_leg=1.10)
+    rows = build_day_rows(day, DATE, grid.expand(), exit_rule, prev_close=4640.0)
+    assert len(rows) == 2, "eine Zeile je Exit-Spec"
+    df = pd.DataFrame(rows)
+    assert set(df.columns) == set(DATASET_COLUMNS)
+
+    by_pt = {r["profit_target_pct"]: r for r in rows}
+    pt = by_pt[0.30]
+    assert pt["exit_reason"] == "profit_target" and pt["cand_profit_target"] == 0.30
+    assert pt["tradable"] == 1 and pt["strike"] == 4650.0
+    # deaktivierte Regel -> Halten bis Verfall; Exit-Features NaN
+    hold = next(r for r in rows if pd.isna(r["profit_target_pct"]))
+    assert hold["exit_reason"] == "expiration"
+    assert pd.isna(hold["cand_profit_target"]) and pd.isna(hold["cand_stop_mult"])
+
+    # Konsistenz: geteiltes Setup == Einzelsimulation desselben Kandidaten.
+    from tradingbot_0dte.ml.labels import Candidate, simulate_candidate
+    single = simulate_candidate(
+        day, DATE, Candidate(entry_time="09:35:00", target_delta=0.16,
+                             delta_low=0.05, delta_high=0.20, exit_spec=ExitSpec(0.30, 2.0, None)),
+        exit_rule)[0]
+    assert math.isclose(single.pnl, pt["pnl"], rel_tol=1e-12)
+    print("[ok] build_day_rows Exit-Achse (Zeile/Spec, Meta/Features, Setup-Konsistenz)")
+
+
 def main():
     test_default_entry_times()
     test_candidate_grid_expand()
     test_build_day_rows_tradable_and_label()
     test_build_day_rows_shared_market_features()
+    test_grid_expand_exit_axis()
+    test_build_day_rows_exit_axis_and_consistency()
     print("\nAlle ML-Dataset-Offline-Tests bestanden.")
 
 

@@ -36,7 +36,7 @@ oder günstiger zurückgekauft werden.
 | 13 | Live-Bot | **Vorerst außen vor.** |
 | 14 | MVP-Reihenfolge | **Bestätigt:** 1) Datenpipeline + Speicherung → 2) eine Strategie (nackter Short Put) → 3) Parametermatrix + Spreads. |
 | 15 (2026-06-19) | ML-Ansatz | **Gestaffelt:** zuerst Supervised-EV-Scorer (Gradient-Boosting), der den erwarteten Trade-Ausgang vorhersagt; RL als optionaler späterer Aufsatz. Begründung: bei nur 1088 Handelstagen ist reines RL überanpassungsanfällig und schwer validierbar; der Supervised-Ansatz reicht schneller ein belastbares Signal und nutzt die bestehende Engine als Label-Generator. |
-| 16 (2026-06-19) | Lern-Scope | **Entry zuerst gelernt** (Timing, Ziel-Delta, naked/Spread), **Exit zunächst regelbasiert** (fixe, grid-gesuchte Stop/Target/Zeit-Regel). Exits werden in einem Folgeschritt mitgelernt (Kandidatenraum erweitern). |
+| 16 (2026-06-19) | Lern-Scope | **Entry zuerst gelernt** (Timing, Ziel-Delta, naked/Spread), **Exit zunächst regelbasiert** (fixe, grid-gesuchte Stop/Target/Zeit-Regel). Exits werden in einem Folgeschritt mitgelernt (Kandidatenraum erweitern). **Umgesetzt in Schritt 6 (2026-06-19):** Exit-Achse (ExitSpec) im Kandidatenraster; Modell scort (Entry × Exit), Policy wählt je Gelegenheit den besten Exit. |
 | 17 (2026-06-19) | Validierung | **Walk-Forward** (rollierendes/expandierendes Training) **+ unberührtes Holdout-Jahr** (letzte ~12 Monate, nie für Training/Threshold-Tuning gesehen). Versöhnt „komplette Historie fürs Training" mit ehrlicher Out-of-Sample-Bewertung. |
 | 18 (2026-06-19) | Zielgröße | **Komposit-Ziel:** Balance aus hohem Gesamt-P&L, hoher Trefferquote und geringem Max-Drawdown (nicht eine einzelne Kennzahl). Wird als gewichteter/normierter Score auf der Walk-Forward-Equity-Kurve berechnet und zum Tuning der Policy-Schwelle genutzt. |
 | 19 (2026-06-19) | ML-Datenbasis | **Nur Daten ab 2023-01-01** fürs ML-Dataset/Training, um die Datenlücken/Inkonsistenzen des SPXW-Starts 2022 zu vermeiden (anfangs nur Mo/Mi/Fr-Verfälle, Di/Do erst im Lauf 2022; dünnere Liquidität → mehr Bars ohne Quote). Verfeinert „komplette Historie" aus dem ursprünglichen Auftrag. Datenbasis damit 2023-01-01 … 2026-06-18. |
@@ -362,7 +362,8 @@ Statt jede Minute „blind" zu handeln, bewertet ein Modell **Trade-Kandidaten**
 4. `policy.py` + `evaluate.py` + `run_ml_backtest.py` — Policy, Komposit-Score,
    Backtest-Lauf über die Engine.
 5. Dashboard-Seite + Vergleichsanbindung.
-6. (Später, separate Phase) Exit-Mitlernen; danach optional RL-Aufsatz.
+6. **(2026-06-19 umgesetzt)** Exit-Mitlernen über eine Exit-Achse im
+   Kandidatenraster (ExitSpec); danach optional RL-Aufsatz.
 
 ### 8.9 Umsetzungs-Log Phase 5
 
@@ -475,3 +476,45 @@ positiv, auf OOS und Holdout. `pnl_hat` schlägt `win_proba` klar als Selektor
 **→ Phase 5 (Schritte 1–5) abgeschlossen:** Supervised-EV-Pipeline von Features
 über Dataset, Modell/Walk-Forward, robuste Top-N-Policy bis Dashboard, out-of-
 sample validiert. Offen: Schritt 6 (gelernte Exits), danach optional RL-Aufsatz.
+
+**2026-06-19 — Schritt 6: Gelernte Exits (Exit-Achse im Kandidatenraster)**
+(`backtest/engine.py`, `ml/labels.py`, `ml/features.py`, `ml/dataset.py`,
+`ml/policy.py`, `ml/evaluate.py`, Scripts + Dashboard-Seite). Setzt Entscheidung
+#16 um: statt einer fixen Exit-Regel lernt das Modell den Exit mit, indem der
+**Kandidatenraum um eine Exit-Achse erweitert** wird — ein Kandidat ist jetzt
+(Entry-Zeit × Ziel-Delta × naked/Spread × **ExitSpec**), wobei ExitSpec =
+(Profit-Target, Stop-Multiplikator, Zeit-Exit). Bewusst gewählt statt eines
+separaten sequentiellen Exit-Modells/RL: dieselbe Engine bleibt einzige Quelle
+der Wahrheit, die ganze Pipeline (Modell/Walk-Forward/Top-N-Policy) wird
+unverändert wiederverwendet, der Exit ist genauso leakage-frei wie der Entry.
+- **ExitSpec-Achse:** `labels.ExitSpec` (drei Schwellen, `None`=deaktiviert →
+  bis Verfall halten); `Candidate.exit_spec` (None ⇒ Default-Exit der `ExitRule`,
+  die nur noch Kosten + Default trägt). `CandidateGrid.exit_specs` → kartesische
+  Erweiterung. Die drei Schwellen werden zusätzlich **Modell-Features**
+  (`cand_profit_target/_stop_mult/_time_exit_min`; deaktiviert→NaN, HGB nativ),
+  damit das Modell (Entry × Exit) gemeinsam scort, sowie Meta-Spalten im Dataset.
+- **Engine-Refactor (Performance):** `_simulate_naked/_spread_entry` in
+  `*_setup` (Strike-Wahl/Entry-Fill/Strike-Zeitreihe, exit-unabhängig) + `*_exit_walk`
+  (je Exit-Regel) + `*_trade` zerlegt; Verhalten unverändert (Regressionstests grün).
+  `labels.simulate_candidate_exits` baut das teure Setup je Entry **einmal** und
+  wiederholt nur den billigen Exit-Walk je Spec. Gemessen **11,3× schneller** bei
+  12 Specs/Entry (P&L bit-genau identisch zur Einzelsimulation) → der Voll-Build
+  mit Exit-Achse bleibt machbar (sonst ~12× der 1–2-h-Basis).
+- **Policy:** `policy.collapse_exits` wählt je Entry-Gelegenheit (Entry-Key =
+  date×entry_time×delta×spread_type×width) zuerst die höchstbewertete
+  Exit-Variante, **dann** greift Top-N — sonst würde Top-N N near-identische
+  Exit-Varianten derselben Gelegenheit ziehen (künstliche Risikokonzentration).
+  `tune_top_n(collapse_exits=…)`; CLI/Dashboard erkennen die Exit-Achse
+  automatisch (`groupby(ENTRY_KEY, dropna=False)` — `spread_width` ist bei naked
+  NaN, sonst fiele der ganze Frame raus; das war ein Bug im ersten Wurf).
+- **CLI:** `build_ml_dataset.py --profit-targets/--stop-mults/--time-exits`
+  (Komma-Listen, `none`/`0`=deaktiviert) baut die Exit-Achse; ohne diese Optionen
+  unverändert eine fixe Regel. `run_ml_backtest.py --collapse-exits auto|on|off`.
+- **Verifiziert:** alle 8 Offline-Test-Dateien grün (neu: Exit-Achsen-Expansion +
+  Setup-Konsistenz in `test_ml_dataset_offline`, `collapse_exits` + Top-N in
+  `test_ml_policy_offline`); Echtdaten-**Smoke** (2023-01…04, 168 Kand./Tag mit
+  12 Exit-Specs) Build→Train→Backtest ohne Fehler, collapse korrekt auto-erkannt,
+  OOS-Tuning positiv (N=2: +1060, PF 1,58). **Offen/nächster Schritt:** der echte
+  Voll-Historie-Build mit Exit-Achse (ab 2023, CLI, Stunden) + Holdout-Vergleich
+  gegen die fixe-Exit-Basis aus Schritt 4 (+20,6k Holdout) — die Smoke-Fenster
+  sind zu klein für eine Aussage zur Güte. Danach optional RL-Aufsatz.

@@ -28,6 +28,9 @@ CANDIDATE_FEATURES = [
     "cand_target_delta", "cand_is_spread", "cand_spread_width",
     "strike_delta", "strike_theta", "strike_vega", "strike_iv",
     "strike_dist_pct", "strike_mid",
+    # Exit-Achse (Schritt 6: gelernte Exits). Deaktivierte Regel (None) -> NaN;
+    # HGB verarbeitet NaN nativ (= "kein Profit-Target / kein Stop / kein Zeit-Exit").
+    "cand_profit_target", "cand_stop_mult", "cand_time_exit_min",
 ]
 FEATURE_COLUMNS = MARKET_FEATURES + CANDIDATE_FEATURES
 
@@ -108,9 +111,20 @@ def market_features(
     }
 
 
-def candidate_features(entry_row: Optional[pd.Series], candidate, underlying: float) -> dict:
-    """Kandidatenspezifische Features inkl. Greeks des gewaehlten Short-Strikes."""
+def _exit_feature(value) -> float:
+    """Exit-Schwelle als Feature: deaktiviert (None) -> NaN, sonst float."""
+    return float(value) if value is not None else np.nan
+
+
+def candidate_features(entry_row: Optional[pd.Series], candidate, underlying: float, exit_spec=None) -> dict:
+    """Kandidatenspezifische Features inkl. Greeks des gewaehlten Short-Strikes.
+
+    exit_spec (Schritt 6): die wirksame Exit-Regel des Kandidaten -- ihre drei
+    Schwellen werden Features, damit das Modell (Entry x Exit) gemeinsam scort.
+    None faellt auf candidate.exit_spec zurueck (kann selbst None sein -> NaN-Features).
+    """
     is_spread = 1.0 if candidate.spread_type == "put_spread" else 0.0
+    spec = exit_spec if exit_spec is not None else getattr(candidate, "exit_spec", None)
     feats = {
         "cand_target_delta": float(candidate.target_delta),
         "cand_is_spread": is_spread,
@@ -121,6 +135,9 @@ def candidate_features(entry_row: Optional[pd.Series], candidate, underlying: fl
         "strike_iv": np.nan,
         "strike_dist_pct": np.nan,
         "strike_mid": np.nan,
+        "cand_profit_target": _exit_feature(spec.profit_target_pct) if spec is not None else np.nan,
+        "cand_stop_mult": _exit_feature(spec.stop_loss_multiplier) if spec is not None else np.nan,
+        "cand_time_exit_min": _exit_feature(spec.time_exit_before_close_min) if spec is not None else np.nan,
     }
     if entry_row is not None:
         feats["strike_delta"] = float(abs(entry_row["delta"]))

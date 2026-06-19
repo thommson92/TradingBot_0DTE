@@ -50,6 +50,7 @@ def _make_dataset(seed: int = 0) -> pd.DataFrame:
                     "strike_iv": 0.21, "strike_mid": 2.0, "strike_dist_pct": 0.01,
                     "date": date, "entry_time": "10:00:00", "target_delta": float(delta),
                     "spread_type": "naked", "spread_width": np.nan,
+                    "profit_target_pct": 0.50, "stop_loss_multiplier": 2.0, "time_exit_min": 5,
                     "tradable": 1, "pnl": pnl, "is_win": 1.0 if pnl > 0 else 0.0,
                     "exit_reason": "x", "strike": 4600.0, "long_strike": np.nan,
                     "entry_price": 2.0, "exit_price": 1.0,
