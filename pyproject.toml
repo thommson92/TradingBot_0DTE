@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradingbot-0dte"
+version = "0.1.0"
+description = "Backtesting-Werkzeug fuer SPX 0-DTE Optionsstrategien (Short Puts / Put-Spreads)"
+requires-python = ">=3.12"
+dependencies = [
+    "thetadata>=1.0.9",
+    "numpy>=1.22",
+    "pandas>=1.5",
+    "pyarrow>=10.0",
+    "duckdb>=0.9",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "tqdm>=4.64",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

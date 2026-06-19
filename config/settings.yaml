@@ -1,0 +1,27 @@
+# Nicht-geheime Konfiguration der Datenpipeline (ThetaData Python-Library).
+# Geheimnisse (API-Key) gehoeren in die .env, nicht hierher.
+
+data:
+  symbol: SPXW          # SPXW = taegliche SPX-Verfaelle (0-DTE). 'SPX' hat nur
+                        # monatliche/quartalsweise Verfaelle, keine taeglichen.
+  right: put            # Strategie handelt Puts
+  interval: "1m"        # 1-Minuten-Bars
+
+  # Relevantes Strike-Band: behalte Puts, deren |Delta| im Tagesverlauf
+  # das Band [low, high+buffer] beruehrt. Deckt Short-Strikes (~0.10-0.20)
+  # UND die tiefer liegenden Long-Legs der Spreads ab.
+  delta_band:
+    low: 0.01
+    high: 0.50
+    buffer: 0.05
+
+  start_date: "2022-01-01"   # ab Start der taeglichen SPX-Verfaelle
+  end_date: null             # null => bis gestern
+
+  # Intraday-Fenster (v3 start_time/end_time, US/Eastern) — auch fuer QC-Erwartung
+  start_time: "09:30:00"
+  end_time: "16:00:00"
+
+storage:
+  parquet_dir: "data/parquet"        # eine Datei je Tag
+  duckdb_path: "data/market.duckdb"

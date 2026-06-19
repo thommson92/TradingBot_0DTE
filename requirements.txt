@@ -1,0 +1,9 @@
+# Phase 1 — Datenpipeline
+thetadata>=1.0.9
+numpy>=1.22
+pandas>=1.5
+pyarrow>=10.0
+duckdb>=0.9
+python-dotenv>=1.0
+PyYAML>=6.0
+tqdm>=4.64
