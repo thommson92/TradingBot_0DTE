@@ -17,6 +17,9 @@ class MarketData:
         self.cfg = cfg
         self.root_dir = cfg.storage.parquet_dir / cfg.data.symbol
         self.con = duckdb.connect(database=":memory:")
+        # Ohne dies konvertiert DuckDB TIMESTAMPTZ-Spalten in die lokale
+        # System-Zeitzone statt in die beim Schreiben verwendete US/Eastern-Zeit.
+        self.con.execute("SET TimeZone='America/New_York'")
 
     def _files(self) -> List[str]:
         if not self.root_dir.exists():

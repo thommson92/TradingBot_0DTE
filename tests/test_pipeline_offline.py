@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
-from tradingbot_0dte.config import Config, DataConfig, StorageConfig
+from tradingbot_0dte.config import Config, DataConfig, StorageConfig, StrategyConfig
 from tradingbot_0dte import download as dl
 from tradingbot_0dte.storage import MarketData
 from tradingbot_0dte.data_quality import per_day_summary, missing_trading_days, expected_bars
@@ -33,6 +33,12 @@ def _make_cfg(tmp: Path) -> Config:
             start_time="09:30:00", end_time="09:31:00",  # 2 Bars erwartet
         ),
         storage=StorageConfig(parquet_dir=tmp / "parquet", duckdb_path=tmp / "m.duckdb"),
+        strategy=StrategyConfig(
+            target_delta=0.16, delta_low=0.01, delta_high=0.50,
+            entry_times=["09:30:00"], max_trades_per_day=1, max_concurrent_positions=1,
+            profit_target_pct=0.30, stop_loss_multiplier=2.0, time_exit_before_close_min=5,
+            slippage_pct_of_spread=0.25, commission_per_contract_leg=1.10,
+        ),
         api_key=None, project_root=tmp,
     )
 

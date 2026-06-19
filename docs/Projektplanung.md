@@ -146,3 +146,35 @@ benötigt **Python 3.12+**):
   Cboe-Erweiterung der SPXW-Verfälle: Anfang 2022 gab es nur Mo/Mi/Fr-Verfälle,
   Di/Do kamen erst im Laufe des Jahres 2022 dazu. Die QC-Heuristik kennt den
   Börsenkalender/die Verfalls-Historie nicht und meldet das als „Lücke".
+
+### 2026-06-19 — Phase 2: Backtest-Engine (nackter Short Put)
+Neues Modul `src/tradingbot_0dte/backtest/` (params, trade, fills, strategy,
+engine, metrics) + CLI `scripts/run_backtest.py` + `strategy:`-Abschnitt in
+`config/settings.yaml`.
+
+- **Entscheidung #5 angepasst (Nutzer-Vorgabe):** „Max. 1 Trade pro Tag" ist
+  **kein festes Kriterium im Code** mehr. Stattdessen: konfigurierbare Liste
+  `entry_times` (beliebig viele Entry-Zeiten/Tag) + konfigurierbares
+  `max_trades_per_day` (`null` = unbegrenzt) + `max_concurrent_positions`
+  (Default 1, kein Stacking). Ein Tag mit nur einer Entry-Zeit verhält sich wie
+  bisher; mehr Entry-Zeiten/höheres Limit ergeben mehr Trades/Tag ohne
+  Code-Änderung. Entry-Zeiten werden sequentiell verarbeitet — jede Position
+  wird sofort bis zum Exit durchsimuliert, bevor die nächste Entry-Zeit geprüft
+  wird (vereinfacht den Concurrency-Check, kein paralleles Bar-Stepping nötig).
+- **Exit-Priorität:** Stop-Loss → Profit-Target → Zeit-Exit (Risiko zuerst),
+  alle drei einzeln nullable (für spätere A/B-Tests in Phase 3). Kein Exit bis
+  Tagesende → Fallback `expiration` (Schluss zum letzten verfügbaren Bar).
+- **Bug gefunden & gefixt:** `MarketData` (DuckDB) konvertierte `TIMESTAMPTZ`-
+  Spalten beim Export nach pandas in die **lokale System-Zeitzone** (hier
+  Europe/Berlin) statt in die beim Schreiben verwendete **US/Eastern-Zeit** —
+  dadurch verglichen Entry-Zeiten wie `09:35:00` gegen die falsche Wanduhrzeit
+  (0 Trades im ersten Smoke-Test). Fix: `SET TimeZone='America/New_York'` auf
+  der DuckDB-Connection (`storage.py`). Betraf nur die Backtest-Engine (die
+  Phase-1-QC-Checks vergleichen keine Wanduhrzeiten, daher unbemerkt).
+- **Sharpe/Sortino-Annahme:** berechnet auf der Tages-P&L-Reihe (annualisiert
+  `sqrt(252)`), nicht auf prozentualen Returns — bei fixer Kontraktzahl=1 (Entscheidung
+  #8) gibt es keine definierte Kapitalbasis.
+- **Verifiziert:** Offline-Tests grün (`test_backtest_offline.py`,
+  `test_pipeline_offline.py`); Smoke-Test Januar 2024 (21 Trades, Win-Rate 71%,
+  plausible Strikes/Exits) und Volljahr 2023 (250 Trades, ~30s Laufzeit,
+  ~10 Handelstage/s) gegen die echten historisierten Daten geprüft.

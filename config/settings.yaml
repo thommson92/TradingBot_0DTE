@@ -25,3 +25,23 @@ data:
 storage:
   parquet_dir: "data/parquet"        # eine Datei je Tag
   duckdb_path: "data/market.duckdb"
+
+# Phase 2: Backtest-Strategie (nackter Short Put).
+strategy:
+  target_delta: 0.16        # Ziel-|Delta| fuer die Strike-Wahl
+  # delta_low/delta_high: optional, default = data.delta_band.low/high (ohne Puffer)
+
+  # Liste der Entry-Zeiten/Tag (US/Eastern, HH:MM:SS). Mehrere Werte = mehrere
+  # moegliche Trades/Tag (kein fixes "1 Trade/Tag" mehr) — begrenzt durch
+  # max_trades_per_day.
+  entry_times:
+    - "09:35:00"
+  max_trades_per_day: 1       # null = unbegrenzt
+  max_concurrent_positions: 1 # kein Stacking offener Positionen
+
+  profit_target_pct: 0.30           # Rueckkauf bei <= 30% der Eroeffnungspraemie
+  stop_loss_multiplier: 2.0         # Rueckkauf bei >= 2x Eroeffnungspraemie
+  time_exit_before_close_min: 5     # Zeit-Exit 5 Min vor Handelsschluss; null = bis Verfall halten
+
+  slippage_pct_of_spread: 0.25      # 25% des Bid/Ask-Spreads, adversativ
+  commission_per_contract_leg: 1.10 # USD pro Kontrakt und Leg (Open+Close je 1x)

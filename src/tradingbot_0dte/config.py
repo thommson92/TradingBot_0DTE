@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -35,9 +35,25 @@ class StorageConfig:
 
 
 @dataclass
+class StrategyConfig:
+    target_delta: float
+    delta_low: float
+    delta_high: float
+    entry_times: List[str]
+    max_trades_per_day: Optional[int]
+    max_concurrent_positions: int
+    profit_target_pct: Optional[float]
+    stop_loss_multiplier: Optional[float]
+    time_exit_before_close_min: Optional[int]
+    slippage_pct_of_spread: float
+    commission_per_contract_leg: float
+
+
+@dataclass
 class Config:
     data: DataConfig
     storage: StorageConfig
+    strategy: StrategyConfig
     api_key: Optional[str]
     project_root: Path
 
@@ -82,11 +98,27 @@ def load_config(settings_path: Optional[Path] = None) -> Config:
         duckdb_path=_resolve(root, s["duckdb_path"]),
     )
 
+    st = raw["strategy"]
+    strategy = StrategyConfig(
+        target_delta=float(st["target_delta"]),
+        delta_low=float(st.get("delta_low", band["low"])),
+        delta_high=float(st.get("delta_high", band["high"])),
+        entry_times=[str(t) for t in st["entry_times"]],
+        max_trades_per_day=(int(st["max_trades_per_day"]) if st.get("max_trades_per_day") is not None else None),
+        max_concurrent_positions=int(st.get("max_concurrent_positions", 1)),
+        profit_target_pct=(float(st["profit_target_pct"]) if st.get("profit_target_pct") is not None else None),
+        stop_loss_multiplier=(float(st["stop_loss_multiplier"]) if st.get("stop_loss_multiplier") is not None else None),
+        time_exit_before_close_min=(int(st["time_exit_before_close_min"]) if st.get("time_exit_before_close_min") is not None else None),
+        slippage_pct_of_spread=float(st.get("slippage_pct_of_spread", 0.25)),
+        commission_per_contract_leg=float(st.get("commission_per_contract_leg", 1.10)),
+    )
+
     api_key = os.getenv("THETADATA_API_KEY")
 
     return Config(
         data=data,
         storage=storage,
+        strategy=strategy,
         api_key=api_key,
         project_root=root,
     )
