@@ -98,10 +98,18 @@ scripts/
   check_data.py               CLI: Qualitaets-Report
   run_backtest.py             CLI: Backtest (naked Short Put oder Put-Spread)
   run_gridsearch.py           CLI: Grid-Search ueber Strategie-Parameter
+dashboard/
+  app.py                       Streamlit-Dashboard: Home
+  runs.py                      Persistenz fertiger Laeufe (Index + CSV/JSON)
+  pages/
+    1_Backtest.py               Einzel-Backtest konfigurieren/starten/ansehen
+    2_Grid_Search.py            Parametermatrix konfigurieren/starten (Subprocess)
+    3_Vergleich.py              Gespeicherte Laeufe vergleichen
 tests/
   test_pipeline_offline.py    Offline-Test Datenpipeline
   test_backtest_offline.py    Offline-Test Backtest-Engine
   test_gridsearch_offline.py  Offline-Test Grid-Search-Bausteine
+  test_dashboard_runs_offline.py  Offline-Test Lauf-Persistenz (dashboard/runs.py)
 docs/Projektplanung.md        Spezifikation & Entscheidungs-Log
 ```
 
@@ -229,6 +237,40 @@ python tests/test_backtest_offline.py     # inkl. Put-Spread-Tests
 python tests/test_gridsearch_offline.py   # build_param_grid + _run_one, ohne Prozess-Pool
 ```
 
+---
+
+## Phase 4 — Dashboard (aktuell implementiert)
+
+Streamlit-Dashboard zum Definieren von Strategien, Starten von Backtest-/
+Grid-Search-Laeufen und Vergleichen der Ergebnisse — letzter MVP-Baustein.
+
+```bash
+pip install -r requirements.txt   # falls noch nicht installiert: streamlit
+streamlit run dashboard/app.py
+```
+
+Seiten (automatische Sidebar-Navigation aus `dashboard/pages/`):
+
+- **Backtest** — einzelnen Lauf konfigurieren (nackter Short Put oder
+  Put-Spread), starten und Ergebnis (Metrics, Equity-Kurve, P&L-Histogramm,
+  Trade-Log) ansehen, optional speichern.
+- **Grid-Search** — Parametermatrix ueber mehrere Achsen auswerten (ruft
+  `scripts/run_gridsearch.py` als Subprocess auf, kein eigenes
+  Multiprocessing im Streamlit-Prozess), Leaderboard + Risiko/Ertrag-Scatter,
+  optional speichern.
+- **Vergleich** — gespeicherte Laeufe (Backtest + Grid-Search) gegenueber-
+  stellen: Tabelle, Performance-Balkendiagramm, Chance/Risiko-Scatter,
+  Grid-Search-Leaderboard-Drilldown.
+
+Gespeicherte Laeufe landen unter `out/backtests/` (CSV/JSON je Lauf + flacher
+Index `runs_index.csv`).
+
+```bash
+python tests/test_dashboard_runs_offline.py   # Offline-Test Lauf-Persistenz (runs.py)
+```
+
 ## Naechste Phasen
 
-- **Phase 4:** Streamlit-Dashboard (Strategie-Vergleich, Chance/Risiko-Profil)
+Keine weiteren MVP-Phasen offen (Phasen 1–4 abgeschlossen, siehe
+[docs/Projektplanung.md](docs/Projektplanung.md) fuer moegliche Erweiterungen
+nach dem MVP).

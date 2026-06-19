@@ -219,3 +219,42 @@ CLI `scripts/run_gridsearch.py`. Setzt Entscheidungen #7 (Spread-Breite
   `put_spread/Breite 10` deckt sich exakt mit dem einzelnen Backtest-Lauf
   (-287.40 USD), `spread_width` hat erwartungsgemäß keinen Effekt auf
   `naked`-Zeilen.
+
+### 2026-06-19 — Phase 4: Streamlit-Dashboard
+Neues Verzeichnis `dashboard/` (Home `app.py` + drei Seiten unter `pages/`),
+letzter MVP-Baustein laut Entscheidung #11/#14 und §3.4 (Strategien
+definieren, Läufe starten, Ergebnisse vergleichen — Performance + Chance/
+Risiko-Profil). Einzige neue Abhängigkeit: `streamlit`; Diagramme über die
+nativen `st.line_chart`/`st.bar_chart`/`st.scatter_chart` (kein zusätzliches
+Plotting-Paket).
+
+- **Subprocess statt Pool für die Grid-Search-Seite:** ein
+  `ProcessPoolExecutor` direkt aus dem Streamlit-Skript heraus zu starten ist
+  riskant — Streamlit-Skripte laufen ohne `if __name__ == "__main__":`-Guard
+  auf Modulebene, und der `spawn`-Start (macOS) importiert das `__main__`-
+  Modul in jedem Worker neu, was im Worst Case zum erneuten Booten der ganzen
+  App pro Worker führen könnte. Die Grid-Search-Seite ruft daher das bereits
+  einzeln getestete `scripts/run_gridsearch.py` als Subprocess auf und lädt das
+  resultierende Leaderboard-CSV zurück, statt `gridsearch.run_grid()` im
+  Streamlit-Prozess aufzurufen. Der Einzel-Backtest hat dieses Problem nicht
+  (kein Pool) und ruft `engine.run()` direkt im Prozess auf.
+- **Lauf-Persistenz (`dashboard/runs.py`):** bewusst ohne Streamlit-Import
+  gehalten (reine Logik), damit sie wie der restliche Kern offline testbar ist
+  (`test_dashboard_runs_offline.py`). Jeder gespeicherte Lauf schreibt
+  CSV (Trade-Log)/JSON (Metrics bei Backtests) unter `out/backtests/` und
+  hängt eine flache Zeile an `out/backtests/runs_index.csv` an, damit die
+  Vergleichsseite Läufe auflisten kann, ohne jede Ergebnisdatei erneut zu
+  parsen. Bei Grid-Search-Läufen repräsentiert die Index-Zeile die **beste**
+  Zeile des Leaderboards; `csv_path` zeigt auf das volle Leaderboard für den
+  Drilldown auf der Vergleichsseite.
+- **Verifiziert:** alle Offline-Tests grün (inkl. neuem
+  `test_dashboard_runs_offline.py`, 4 Tests); manueller Smoke-Test über
+  `streamlit.testing.v1.AppTest` (kein Browser nötig) gegen echte historisierte
+  Daten — Home zeigt den korrekten Datenzeitraum (1088 Handelstage,
+  20220103–20260618); Backtest-Seite liefert mit Defaults über die letzten 90
+  Tage 63 Trades/69.8% Win-Rate/+3706.40 USD und lässt sich speichern;
+  Grid-Search-Seite liefert über einen 2-Werte-Delta-Achse (Subprocess) ein
+  Leaderboard ohne Exception und lässt sich speichern; Vergleichsseite zeigt
+  beide gespeicherten Läufe (Tabelle, Balkendiagramm, Scatter, Grid-Search-
+  Drilldown) ohne Fehler. `use_container_width` (in dieser Streamlit-Version
+  bereits über dem Removal-Datum) durch `width="stretch"` ersetzt.
