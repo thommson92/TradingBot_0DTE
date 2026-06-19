@@ -39,6 +39,7 @@ oder günstiger zurückgekauft werden.
 | 16 (2026-06-19) | Lern-Scope | **Entry zuerst gelernt** (Timing, Ziel-Delta, naked/Spread), **Exit zunächst regelbasiert** (fixe, grid-gesuchte Stop/Target/Zeit-Regel). Exits werden in einem Folgeschritt mitgelernt (Kandidatenraum erweitern). |
 | 17 (2026-06-19) | Validierung | **Walk-Forward** (rollierendes/expandierendes Training) **+ unberührtes Holdout-Jahr** (letzte ~12 Monate, nie für Training/Threshold-Tuning gesehen). Versöhnt „komplette Historie fürs Training" mit ehrlicher Out-of-Sample-Bewertung. |
 | 18 (2026-06-19) | Zielgröße | **Komposit-Ziel:** Balance aus hohem Gesamt-P&L, hoher Trefferquote und geringem Max-Drawdown (nicht eine einzelne Kennzahl). Wird als gewichteter/normierter Score auf der Walk-Forward-Equity-Kurve berechnet und zum Tuning der Policy-Schwelle genutzt. |
+| 19 (2026-06-19) | ML-Datenbasis | **Nur Daten ab 2023-01-01** fürs ML-Dataset/Training, um die Datenlücken/Inkonsistenzen des SPXW-Starts 2022 zu vermeiden (anfangs nur Mo/Mi/Fr-Verfälle, Di/Do erst im Lauf 2022; dünnere Liquidität → mehr Bars ohne Quote). Verfeinert „komplette Historie" aus dem ursprünglichen Auftrag. Datenbasis damit 2023-01-01 … 2026-06-18. |
 
 ## 3. Abgeleitete Spezifikation (Entwurf)
 
@@ -386,5 +387,40 @@ per DuckDB-`arg_max`-Scan vorab bestimmt und den Workern mitgegeben.
   1638 Zeilen, Win-Rate 70.7 %, ~1.8 s/Tag bei 6 Workern). Parquet-Cache unter
   `out/ml/` (gitignored).
 - **Performance-Hinweis:** Das Default-Vollraster (26 Entry-Zeiten × 5 Deltas ×
-  3 Spread-Typen = 390 Kandidaten/Tag × 1088 Tage) ist ein einmaliger
-  Cache-Build von grob 1–3 h; Rastergröße ist per CLI frei wählbar.
+  3 Spread-Typen = 390 Kandidaten/Tag) ist ein einmaliger Cache-Build von grob
+  1–2 h (Rechenzeit für die Trade-Simulation, nicht Ladezeit; Rastergröße per CLI
+  frei wählbar). **Datenbasis ab 2023** (Entscheidung #19).
+
+**2026-06-19 — Engine-Bugfix: NaT-Crash bei Put-Spreads mit Bars ohne Quote**
+(`backtest/engine.py`, Regressionstest in `test_backtest_offline.py`). Beim
+Voll-Historie-Build trat im Spread-Pfad ein `TypeError: '>=' not supported
+between NaTType and float64` auf. Ursache: `_simulate_spread_entry` iterierte das
+gemergte Short/Long-DataFrame mit `iterrows()` (und nutzte `iloc[-1]` für den
+Expiration-Fallback). Dieses DataFrame hat **nur Timestamp- + Float-Spalten**
+(keine String-Spalte) — pandas koerziert eine solche Zeile auf `datetime64` und
+macht aus `NaN` bid/ask (Bar ohne Quote, real ab und zu vorhanden) ein `NaT`; die
+Preis-Arithmetik ergab dann `NaT` und der Schwellenwert-Vergleich warf. Der
+nackte Put war nie betroffen, weil seine Zeile die String-Spalte `right` enthält
+(→ object-dtype, kein Coercion). **Fix:** `itertuples(index=False)` statt
+`iterrows`/`iloc` (erhält die Dtypes pro Feld → `NaN` bleibt float). Zusätzlich
+markiert `ml/dataset.py` Trades mit nicht-finitem P&L (Expiration-Fallback auf
+einem NaN-Bar) als nicht handelbar, damit keine fehletikettierten Zeilen ins
+Training gelangen. Verifiziert: neuer Regressionstest grün; realer Lauf über
+Jan–Feb 2022 (vorher Crash-Region) läuft jetzt ohne Fehler durch.
+
+**2026-06-19 — Schritt 3: EV-Modell + Walk-Forward** (`ml/model.py`,
+`ml/walkforward.py`, `scripts/train_ml.py`, `test_ml_model_offline.py`).
+- `model.py`: `EVModel` = HistGradientBoosting-Regressor (P&L) + -Classifier
+  (P(Win)) hinter einem Adapter; NaN-Features nativ, deterministisch
+  (early_stopping aus). Training nur auf handelbaren Zeilen; entartetes
+  Win-Label (nur eine Klasse) wird als konstante Wahrscheinlichkeit abgefangen.
+- `walkforward.py`: quartalsweise, expandierendes Training; Holdout-Zeitraum
+  komplett ausgeschlossen; Purging trivial (0-DTE → Trade endet am selben Tag,
+  `Train-Tag < Test-Tag` genügt).
+- `train_ml.py`: Walk-Forward + finales Modell + Holdout-Bewertung, speichert
+  Modell (joblib) und OOS-/Holdout-Vorhersagen; Rang-Report (MAE/R²/AUC + reale
+  P&L getrennt nach Vorhersage-Vorzeichen).
+- **Verifiziert:** 4 Offline-Tests grün; CLI-Smoke-Test gegen synthetisches
+  Dataset (Walk-Forward 3 Folds, Holdout, Speichern) erfolgreich. Echtdaten-
+  Training folgt nach Abschluss des 2023+-Dataset-Builds.
+- **Neue Abhängigkeit:** scikit-learn (1.9.0, auf Python 3.14 verfügbar).
