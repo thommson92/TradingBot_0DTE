@@ -70,6 +70,34 @@ def save_backtest_run(
     return row
 
 
+def save_ml_run(
+    out_dir: Path, label: str, start: Optional[str], end: Optional[str],
+    metrics: dict, trades_df: pd.DataFrame, info: Optional[dict] = None,
+) -> dict:
+    """Speichert einen ML-Policy-Backtest (Trade-Log CSV + Metrics/Info JSON) und
+    haengt eine Index-Zeile an (kind='ml_backtest'), damit die Vergleichsseite ihn
+    neben Backtests/Grid-Search auflisten kann. `info` enthaelt Policy-Details
+    (Schwelle, Top-Perzentil, Modellpfad, Bewertungssegment)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stem = "%s_%s" % (ts, _slug(label))
+    csv_path = out_dir / ("%s.csv" % stem)
+    json_path = out_dir / ("%s.json" % stem)
+
+    trades_df.to_csv(csv_path, index=False)
+    payload = {"metrics": metrics, "info": info or {}}
+    json_path.write_text(json.dumps(payload, indent=2, default=float))
+
+    row = {
+        "run_ts": ts, "label": label, "kind": "ml_backtest", "start": start, "end": end,
+        "csv_path": str(csv_path), "json_path": str(json_path),
+        "target_delta": None, "spread_type": "ml_policy", "spread_width": None,
+    }
+    row.update({k: metrics.get(k) for k in metrics})
+    _append_index_row(out_dir, row)
+    return row
+
+
 def save_gridsearch_run(
     out_dir: Path, label: str, axes: dict, start: Optional[str], end: Optional[str],
     leaderboard_df: pd.DataFrame, csv_path: Path,

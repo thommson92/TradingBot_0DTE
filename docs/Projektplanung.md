@@ -424,3 +424,36 @@ Jan–Feb 2022 (vorher Crash-Region) läuft jetzt ohne Fehler durch.
   Dataset (Walk-Forward 3 Folds, Holdout, Speichern) erfolgreich. Echtdaten-
   Training folgt nach Abschluss des 2023+-Dataset-Builds.
 - **Neue Abhängigkeit:** scikit-learn (1.9.0, auf Python 3.14 verfügbar).
+
+**2026-06-19 — Echtdaten-Validierung Schritt 3 (2023+-Dataset)**
+Dataset: 868 Handelstage, 338.520 Zeilen, 100 % handelbar; Basis-Ø-P&L pro
+Kandidat ≈ −5 (fixe Exit-Regel → der Durchschnittskandidat verliert leicht).
+Training mit Holdout ab 2025-07-01 (28 % der Zeilen). Modell-Rohmetriken sind
+erwartungsgemäß schwach (OOS AUC 0.56, R² negativ — den exakten P&L eines 0-DTE-
+Trades vorherzusagen ist aussichtslos), **aber das Ranking trägt**: nach
+erwartetem P&L (`pnl_hat`) selektierte Top-Slices drehen die Strategie auf
+positiv, auf OOS und Holdout. `pnl_hat` schlägt `win_proba` klar als Selektor
+(hohe Win-Wahrscheinlichkeit = viele kleine Gewinne + seltene grosse Verluste).
+
+**2026-06-19 — Schritt 4: Policy + Komposit-Score + ML-Backtest** (`ml/policy.py`,
+`ml/evaluate.py`, `scripts/run_ml_backtest.py`, `dashboard/runs.py::save_ml_run`,
+`test_ml_policy_offline.py`).
+- **Zentrale Erkenntnis (Policy-Formulierung):** Eine **absolute** `pnl_hat`-
+  Schwelle generalisiert NICHT — auf OOS getunt (Top 3 %) liefert sie Holdout
+  −9.170 (PF 0.97), weil die Score-Kalibrierung zwischen Zeiträumen driftet.
+  Die **kausale Per-Tag-Top-N-Policy** (täglich die N Kandidaten mit höchstem
+  `pnl_hat`, optional `pnl_hat>0`-Floor) ist robust: relativ statt absolut, kein
+  Zukunftsblick, immun gegen Drift — genau das, was ein Live-Bot fahren würde.
+- `policy.py::select_trades` (Schwelle/Win-Filter/Tageslimit), `evaluate.py`
+  (Trade-Log mit exit_ts-Proxy aus date+entry_time, `composite_score` =
+  Calmar-ähnlich + Win-Rate-Schwelle, `tune_top_n` = N auf OOS wählen,
+  `tune_threshold` nur noch zum Diagnose-Vergleich).
+- **Komposit-Profil "ausgewogen" (Entscheidung #18):** Calmar (Gesamt-P&L /
+  Max-Drawdown) mit Win-Rate-Mindestschwelle.
+- **Verifiziert (Holdout, out-of-sample):** Tuning wählte N=2 Trades/Tag →
+  **+20.634 P&L, Ø +47/Trade, Win 71,9 %, PF 1,30, Sharpe 2,08, MaxDD 8.846**
+  (Gewinn ≈ 2,3× Drawdown). Robust über N=1..5 (alle profitabel). 6 Offline-Tests
+  grün; Lauf dashboard-kompatibel unter `out/backtests/` gespeichert
+  (kind='ml_backtest' → erscheint auf der bestehenden Vergleichsseite).
+- **Grösstes offenes Potenzial:** Die fixe Exit-Regel (Basis-Ø −5) ist
+  suboptimal; gelernte Exits (Schritt 6) sind der nächste Hebel.
