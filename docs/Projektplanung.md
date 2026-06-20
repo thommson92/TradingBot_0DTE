@@ -514,7 +514,31 @@ unverändert wiederverwendet, der Exit ist genauso leakage-frei wie der Entry.
   Setup-Konsistenz in `test_ml_dataset_offline`, `collapse_exits` + Top-N in
   `test_ml_policy_offline`); Echtdaten-**Smoke** (2023-01…04, 168 Kand./Tag mit
   12 Exit-Specs) Build→Train→Backtest ohne Fehler, collapse korrekt auto-erkannt,
-  OOS-Tuning positiv (N=2: +1060, PF 1,58). **Offen/nächster Schritt:** der echte
-  Voll-Historie-Build mit Exit-Achse (ab 2023, CLI, Stunden) + Holdout-Vergleich
-  gegen die fixe-Exit-Basis aus Schritt 4 (+20,6k Holdout) — die Smoke-Fenster
-  sind zu klein für eine Aussage zur Güte. Danach optional RL-Aufsatz.
+  OOS-Tuning positiv (N=2: +1060, PF 1,58).
+
+**2026-06-20 — Echtdaten-Validierung Schritt 6 (Voll-Build mit Exit-Achse)**
+Voll-Build ab 2023 mit der 18er-Exit-Achse (PT {0,30/0,50/aus} × Stop {2×/3×} ×
+Zeit-Exit {5/30/aus}): **6.093.360 Zeilen** (868 Tage × 7020 Kand./Tag), Build
+~1h52, Train ~13 min, Backtest ~10 s (dank Shared-Setup, 8 Worker). Der erweiterte
+Exit-Menü hebt den **Basis-Ø-Kandidaten von −5 auf −2,6** — bessere Exits
+existieren also nachweislich im Raster.
+- **Ergebnis (ehrlich, gemischt/negativ):** Die gelernten Exits **schlagen die
+  fixe-Exit-Basis aus Schritt 4 out-of-sample NICHT.** Auf OOS getunt wählte der
+  Komposit-Score N=1 (OOS sah brillant aus: +82,3k, PF 2,34, Sharpe 5,21); auf dem
+  **unberührten Holdout** dann nur **+11,2k, Win 68,6 %, PF 1,22, Sharpe 1,27,
+  MaxDD 6,5k** — deutlich unter der Basis (**N=2 fix: +20,6k, PF 1,30, Sharpe 2,08**).
+  Großer OOS→Holdout-Abfall = Generalisierungslücke: die 18-fache Kandidatenmenge
+  + Exit-Features geben dem Ranker mehr Raum zum Überanpassen, der Vorsprung trägt
+  schlechter ins ungesehene Jahr als beim einfacheren fixen Modell. Holdout-N-Sweep
+  (nur Diagnose, nicht die getunte Wahl): alle N profitabel, Bestwert N=5 +23,8k,
+  aber durchweg dünne PF ~1,1.
+- **Was das Modell bei seinen Top-Picks „lernte" (Holdout, N=1):** fast nur naked
+  (99 %), hohes Ziel-Delta (0,30 zu 77 %), meist **kein** Profit-Target (77 % „aus"
+  → laufen lassen), eher weiter Stop (3×), gemischte Zeit-Exits; Exit-Gründe breit
+  gestreut (Zeit-Exit 36 %, Stop 28 %, Verfall 19 %, Profit-Target 18 %).
+- **Fazit:** Die Infrastruktur ist korrekt und schnell, aber die Exit-Achse in
+  dieser Form bringt **keinen Out-of-Sample-Vorteil**. Hebel für einen Folgeversuch:
+  kleinere/regularisierte Exit-Achse (nicht volles Kartesisch), konservativeres
+  Komposit-Tuning (höhere Win-Rate-Schwelle / N gemeinsam mit Exit wählen), oder
+  die fixen Exits als „gut genug" akzeptieren und stattdessen den RL-Aufsatz
+  angehen. Baseline-Artefakte (Schritt 4) blieben unangetastet (`*_exits`-Dateien).
